@@ -113,7 +113,11 @@ int main(int argc, char **argv) {
 
     int error_counter = 0;
     for(int i = 0; i < element_count; i++) {
-        error_counter += filter_func(h_input[i], reference) == h_filter_result[i] ? 0 : 1;
+        bool is_equal = (filter_func(h_input[i], reference) == h_filter_result[i]);
+        if(is_equal == 0) {
+            std::cout << i << "," << std::endl;
+        }
+        error_counter += 1 - is_equal;
     }
     std::cout << error_counter << " Error" << (error_counter != 1 ? "s" : "") << std::endl;
 
