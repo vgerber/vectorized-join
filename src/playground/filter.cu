@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
         cudaEventRecord(events[device_index * 2], streams[device_index]);
         cudaMemcpyAsync(device_d_inputs[device_index], &h_input[data_offset], data_size * sizeof(int), cudaMemcpyHostToDevice, streams[device_index]);
         filter<<<numBlocks, threadsPerBlock, 0, streams[device_index]>>>(data_size, device_d_inputs[device_index], reference, device_d_filter_results[device_index], filter_func);
-        cudaMemcpyAsync(h_filter_result, device_d_filter_results[data_offset], data_size * sizeof(bool), cudaMemcpyDeviceToHost, streams[device_index]);
+        cudaMemcpyAsync(&h_filter_result[data_offset], device_d_filter_results[device_index], data_size * sizeof(bool), cudaMemcpyDeviceToHost, streams[device_index]);
         cudaEventRecord(events[device_index * 2 + 1], streams[device_index]);
 
         device_input_size[device_index] = data_size;
