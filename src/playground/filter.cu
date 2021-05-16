@@ -8,6 +8,16 @@
 typedef uint64_t filter_int;
 typedef bool filter_mask;
 
+/**
+ * @brief Fills a bitmask with the result of the filter predicate
+ * 
+ * @tparam F Predicate function type
+ * @param size Size of input array
+ * @param input Input array
+ * @param reference Reference value for predicate
+ * @param filter_result Resulting bitmask
+ * @param f Filter predicate
+ */
 template <class F>
 __global__
 void filter_kernel(int size, filter_int *input, filter_int reference, filter_mask *filter_result, F f) {
