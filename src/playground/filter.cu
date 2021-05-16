@@ -158,7 +158,13 @@ int main(int argc, char **argv) {
     filter_int reference = 20;
 
     // filter function
-    auto filter_func = [=] __device__ __host__ (filter_int x, filter_int ref) { return x == ref; };
+    // host is required when ERROR_CHECK == 1
+    auto filter_func = [=] 
+        __device__ 
+#if ERROR_CHECK
+        __host__ 
+#endif
+        (filter_int x, filter_int ref) { return x == ref; };
 
     // allocate memory
     h_input = new filter_int[element_count];
