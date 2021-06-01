@@ -175,7 +175,7 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
     std::cout << error_counter << " Error" << (error_counter != 1 ? "s" : "") << std::endl;
 #endif
 
-    float elements_per_thread = input_size / (benchmark_config.max_gpus * blocks_per_gpu * threads_per_gpu); 
+    float elements_per_thread = (float)input_size / (float)(benchmark_config.max_gpus * blocks_per_gpu * threads_per_gpu); 
     write_benchmark(benchmark_config.output_file, FILTER_VERSION, device_count, total_mp_count, threads_per_gpu, blocks_per_gpu, input_size, sizeof(filter_int), runtime_no_mem_ms, throughput_no_mem_gb, elements_per_thread);
 
     // cleanup
