@@ -2,6 +2,8 @@
 #include <iostream>
 #include <time.h>
 #include <fstream>
+#include "benchmark/config.hpp"
+#include "benchmark/log.hpp"
 
 #define ERROR_CHECK 0
 #define DEBUG_PRINT 0
@@ -9,42 +11,6 @@
 
 typedef uint64_t filter_int;
 typedef bool filter_mask;
-
-struct BenchmarkConfig
-{
-    int max_threads_per_gpu = 1024;
-    uint max_blocks_per_gpu = UINT_MAX;
-    int max_gpus = 2;
-    std::fstream output_file;
-};
-
-void write_benchmark_header(std::fstream &output) {
-    output << "version" << ",";
-    output << "gpu_count" << ",";
-    output << "mp_count" << ",";
-    output << "threads_per_gpu" << ",";
-    output << "blocks_per_gpu" << ",";
-    output << "element_count" << ",";
-    output << "runtime_ms" << ",";
-    output << "runtime_no_mem_ms" << ",";
-    output << "throughput_gb" << ",";
-    output << "throughput_no_mem_gb";
-    output << std::endl;
-}
-
-void write_benchmark(std::fstream &output, int gpu_count, int mp_count, int threads_per_gpu, int blocks_per_gpu, int element_count, float runtime_ms, float runtime_no_mem_ms, float throughput_gb, float throughput_no_mem_gb) {
-    output << FILTER_VERSION << ",";
-    output << gpu_count << ",";
-    output << mp_count << ",";
-    output << threads_per_gpu << ",";
-    output << blocks_per_gpu << ",";
-    output << element_count << ",";
-    output << runtime_ms << ",";
-    output << runtime_no_mem_ms << ",";
-    output << throughput_gb << ",";
-    output << throughput_no_mem_gb;
-    output << std::endl;
-}
 
 
 /**
@@ -78,7 +44,7 @@ void filter_kernel(int size, filter_int *input, filter_int reference, filter_mas
  * @param predicate Predicate for filter evaluation
  */
 template<class F>
-void filter(int input_size, filter_int *input_values, filter_mask* output_mask, filter_int reference, F predicate, BenchmarkConfig &benchmark_config) {
+void filter(int input_size, filter_int *input_values, filter_mask* output_mask, filter_int reference, F predicate, BenchmarkRunConfig &benchmark_config) {
 
     // setup device resources
     // get devices
@@ -209,7 +175,8 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
     std::cout << error_counter << " Error" << (error_counter != 1 ? "s" : "") << std::endl;
 #endif
 
-    write_benchmark(benchmark_config.output_file, device_count, total_mp_count, threads_per_gpu, blocks_per_gpu, input_size, runtime_ms, runtime_no_mem_ms, throughput_gb, throughput_no_mem_gb);
+    float elements_per_thread = input_size / (benchmark_config.max_gpus * blocks_per_gpu * threads_per_gpu); 
+    write_benchmark(benchmark_config.output_file, FILTER_VERSION, device_count, total_mp_count, threads_per_gpu, blocks_per_gpu, input_size, sizeof(filter_int), runtime_no_mem_ms, throughput_no_mem_gb, elements_per_thread);
 
     // cleanup
     for(int device_index = 0; device_index < device_count; device_index++) {
@@ -230,7 +197,23 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
 int main(int argc, char **argv) {
     srand(time(NULL));
 
-    const int element_count = 1<<20;
+    if(argc != 3) {
+        std::cout << "Invalid arguments. Use <app> <config_path> <profile>" << std::endl;
+        return -1;
+    }
+
+    BenchmarkSetup benchmark_setup;
+    if(!load_benchmark_setup(std::string(argv[1]), std::string(argv[2]), &benchmark_setup)) {
+        std::cout << "Failed to load config" << std::endl;
+        return -1;
+    }
+
+
+    const long element_count = benchmark_setup.elements;
+    if(element_count < 0) {
+        std::cout << "Invalid element count " << element_count << std::endl;
+        return -1;
+    }
     filter_int *h_input;
     filter_mask *h_filter_result;
     filter_int reference = 20;
@@ -253,46 +236,44 @@ int main(int argc, char **argv) {
         h_input[i] = rand() % 200;
     }
 
-    BenchmarkConfig benchmark_config;
-    benchmark_config.output_file.open("run.csv", std::ios::out);
-    if(!benchmark_config.output_file.is_open()) {
-        std::cout << "Could not open benchmark file" << std::endl;
-        return -1;
+    // write benchmark header
+    {
+        std::fstream output_file(benchmark_setup.output_file_path, std::ios::out);
+        write_benchmark_header(output_file);
+        output_file.close();
     }
-
-    write_benchmark_header(benchmark_config.output_file);
-
 
     int device_count = 0;
     cudaGetDeviceCount(&device_count);
-    device_count = std::min(device_count, benchmark_config.max_gpus);
+    device_count = std::min(device_count, *std::max_element(std::begin(benchmark_setup.gpus), std::end(benchmark_setup.gpus)));
 
-    int runs = 50;
-    int gpu_count[] = { 1, 2 };
-    int thread_count[] = { 32, 64, 128, 256, 512, 1024 };
-    uint block_count[] = { 32, 64, 128, 256, 512, 1024, UINT_MAX };
+    int runs = benchmark_setup.runs;
+    //int gpu_count[] = { 1, 2 };
+    //int thread_count[] = { 32, 64, 128, 256, 512, 1024 };
+    //uint block_count[] = { 32, 64, 128, 256, 512, 1024, UINT_MAX };
 
     for(int run_index = 0; run_index < runs; run_index++) {
         std::cout << "Run " << (run_index+1) << "/" << runs << std::endl;
-        for(int gpu_index = 0; gpu_index < sizeof(gpu_count) / sizeof(int); gpu_index++) {
-            if(gpu_count[gpu_index] > device_count) {
+        for(auto gpu_count : benchmark_setup.gpus) {
+            if(gpu_count > device_count) {
                 break;
             }
-            for(int thread_index = 0; thread_index < sizeof(thread_count) / sizeof(int); thread_index++) {
-                for(int block_index = 0; block_index < sizeof(block_count) / sizeof(uint); block_index++) {
+            for(auto threads : benchmark_setup.threads) {
+                for(auto blocks : benchmark_setup.blocks) {
 #if DEBUG_PRINT                    
-                    std::cout << "Run " << gpu_index << "," << thread_index << std::endl;
+                    std::cout << "Run " << gpu_count << "," << blocks << "," << threads << std::endl;
 #endif                
-                    benchmark_config.max_gpus = gpu_count[gpu_index];
-                    benchmark_config.max_threads_per_gpu = thread_count[thread_index];
-                    benchmark_config.max_blocks_per_gpu = block_count[block_index];
-                    filter(element_count, h_input, h_filter_result, reference, filter_func, benchmark_config);
+                    BenchmarkRunConfig run_config;
+                    run_config.max_gpus = gpu_count;
+                    run_config.max_threads_per_gpu = threads;
+                    run_config.max_blocks_per_gpu = blocks;
+                    run_config.output_file.open(benchmark_setup.output_file_path, std::ios::out | std::ios::app);
+                    filter(element_count, h_input, h_filter_result, reference, filter_func, run_config);
                 }
             }
         }  
     }
 
-    benchmark_config.output_file.close();
     delete[] h_input;
     delete[] h_filter_result;
 }
