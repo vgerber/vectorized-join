@@ -1,0 +1,47 @@
+input: R (build set), S (probe set)
+
+0. Collect
+Collect meta information from A and B (size)
+Assign A, B to R, S
+
+1. Partitioning (Radix)
+bitIndex = 0
+bitStep = ceil(ld(gpus))
+do until R paritition fits in shared mem
+    Assign Partition ID by LSB on Hash (Bits = bitStep) (R and S) at bitIndex
+    bitIndex += bitStep
+
+Use Algorithm 1 (Data Partitioning for In-Memory Systems)
+
+2. Build
+Build hashtable from R use Listing 2 (Hardware Conscious Hash-Joins) 
+
+3. Probing
+Probe S on hastabel R use Listing 1 (Hardware Conscious Hash-Joins) 
+
+4.
+Store probing result in final table
+
+
+
+Data preparation
+
+Data size
+|R| < |S|
+|R| = |S|
+
+Data distirbution
+1. all entries evenly distributed
+2. Gaussian distribution on R (shift or Zipf distr.?)
+3. All entries same hash on R
+
+Data properties
+Distribution
+    - skew
+    - distribution type
+Size
+
+Metrics
+Throughput (elements / gb/s)
+Device utilisation
+
