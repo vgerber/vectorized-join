@@ -1,16 +1,8 @@
-
 #include <iostream>
-#include <time.h>
 #include <fstream>
-#include "benchmark/config.hpp"
+#include "benchmark/configuration.hpp"
 #include "benchmark/log.hpp"
-
-#define ERROR_CHECK 0
-#define DEBUG_PRINT 0
-#define FILTER_VERSION 0
-
-typedef uint64_t filter_int;
-typedef bool filter_mask;
+#include "config.h"
 
 
 /**
@@ -65,8 +57,10 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
      */
 
     cudaStream_t *streams = new cudaStream_t[device_count];
+#if BENCHMARK_TIME
     const int events_per_gpu = 4;
     cudaEvent_t *events = new cudaEvent_t[device_count * events_per_gpu];
+#endif
     filter_mask **device_d_filter_results = new filter_mask*[device_count];
     filter_int **device_d_inputs = new filter_int*[device_count];
     int *device_input_size = new int[device_count];
@@ -88,11 +82,13 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
         // setup device resources
         cudaSetDevice(device_index);
         cudaStreamCreate(&streams[device_index]);
+#if BENCHMARK_TIME        
         int event_offset = device_index * events_per_gpu;
         cudaEventCreate(&events[event_offset]);
         cudaEventCreate(&events[event_offset + 1]);
         cudaEventCreate(&events[event_offset + 2]);
         cudaEventCreate(&events[event_offset + 3]);
+#endif
 
         // filter kernel settings
         cudaDeviceProp device_prop;
@@ -118,25 +114,37 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
         std::cout << "GPU=" << device_index << " B=" << numBlocks.x << " T=" << threadsPerBlock.x << " Filter [X=" << reference << "] N=" << data_size << std::endl;
 #endif
         // start filter (copy to devie -> run filter -> copy to host)
+#if BENCHMARK_TIME
         cudaEventRecord(events[event_offset], streams[device_index]);
+#endif
         cudaMemcpyAsync(device_d_inputs[device_index], &input_values[data_offset], data_size * sizeof(filter_int), cudaMemcpyHostToDevice, streams[device_index]);
+#if BENCHMARK_TIME
         cudaEventRecord(events[event_offset + 2], streams[device_index]);
+#endif
         filter_kernel<<<numBlocks, threadsPerBlock, 0, streams[device_index]>>>(data_size, device_d_inputs[device_index], reference, device_d_filter_results[device_index], predicate);
+#if BENCHMARK_TIME
         cudaEventRecord(events[event_offset + 3], streams[device_index]);
+#endif
         cudaMemcpyAsync(&output_mask[data_offset], device_d_filter_results[device_index], data_size * sizeof(filter_mask), cudaMemcpyDeviceToHost, streams[device_index]);
+#if BENCHMARK_TIME
         cudaEventRecord(events[event_offset + 1], streams[device_index]);
+#endif
 
         device_input_size[device_index] = data_size;
         data_offset += data_size;
     }
     
     // synchronize execution
+#if BENCHMARK_TIME
     for(int device_index = 0; device_index < device_count; device_index++) {
         cudaEventSynchronize(events[device_index * events_per_gpu + 1]);
     }
+#else
+    cudaDeviceSynchronize();
+#endif
 
     // output single gpu runtime
-#if DEBUG_PRINT
+#if DEBUG_PRINT && BENCHMARK_TIME
     for(int device_index = 0; device_index < device_count; device_index++) {
         float filter_runtime_ms = 0;
         cudaEventElapsedTime(&filter_runtime_ms, events[device_index * 2], events[device_index * 2 + 1]);
@@ -147,6 +155,7 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
     // calculate throughput + maximum runtime
     float runtime_ms = 0.0f;
     float runtime_no_mem_ms = 0.0f;
+#if BENCHMARK_TIME
     for(int d1_index = 0; d1_index < device_count; d1_index++) {
         for(int d2_index = 0; d2_index < device_count; d2_index++) {
             // runtime full (with memory ops)
@@ -160,6 +169,7 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
             runtime_no_mem_ms = std::max(runtime_no_mem_ms, runtime_no_mem_ms_new);
         }
     }
+#endif
     float throughput_gb = (input_size * sizeof(filter_int) / std::pow(10, 9)) / (runtime_ms / std::pow(10, 3));
     float throughput_no_mem_gb = (input_size * sizeof(filter_int) / std::pow(10, 9)) / (runtime_no_mem_ms / std::pow(10, 3));
 
@@ -183,9 +193,11 @@ void filter(int input_size, filter_int *input_values, filter_mask* output_mask, 
         cudaFree(device_d_filter_results[device_index]);
         cudaFree(device_d_inputs[device_index]);
         cudaStreamDestroy(streams[device_index]);
+#if BENCHMARK_TIME
         for(int event_index = 0; event_index < events_per_gpu; event_index++) {
             cudaEventDestroy(events[device_index * events_per_gpu + event_index]);    
         }
+#endif
     }
 
     delete[] device_d_filter_results;

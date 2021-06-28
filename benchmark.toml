@@ -5,3 +5,12 @@ gpus = [ 1, 2 ]
 threads = [ 32, 64, 128, 256, 512, 1024 ]
 blocks = [ 32, 64, 128, 256, 512, 1024, 100000000 ]
 output = "benchmark/local/test.csv"
+
+
+[profile]
+elements = 100_000_000
+runs = 1
+gpus = [ 1, 2 ]
+threads = [ 32, 64, 128, 256, 512, 1024 ]
+blocks = [ 32, 64, 128, 256, 512, 1024, 100000000 ]
+output = "benchmark/local/test.csv"
