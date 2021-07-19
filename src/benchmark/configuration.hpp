@@ -110,9 +110,9 @@ std::vector<ProbeConfig> get_probe_configs(BenchmarkSetup setup) {
             for(auto build_threads : setup.probe_build_threads) {
                 for(auto sum_n_p_t : setup.probe_sum_n_per_threads) {
                     for(auto sum_threads : setup.probe_sum_threads) {
-                        for(auto ex_n_p_t : setup.probe_sum_n_per_threads) {
-                            for(auto ex_threads : setup.probe_sum_threads) {
-                                for(auto ex_x_threads : setup.probe_sum_threads) {
+                        for(auto ex_n_p_t : setup.probe_extract_n_per_threads) {
+                            for(auto ex_threads : setup.probe_extract_threads) {
+                                for(auto ex_x_threads : setup.probe_extract_x_threads) {
                                     ProbeConfig config;
                                     config.build_table_load = load;
                                     config.build_n_per_thread = build_n_p_t;
@@ -206,6 +206,18 @@ bool load_probe_benchmark_setup(toml::value config_file, std::string profile, Be
     if (config_file.at(profile).contains(field))
     {
         setup->probe_extract_n_per_threads = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "probe_extract_x_threads";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->probe_extract_x_threads = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {

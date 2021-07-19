@@ -18,8 +18,8 @@ struct ProbeBenchmarkConfig
     static std::string to_string_header() {
         std::ostringstream string_stream;
         string_stream
-            << BenchmarkConfig::to_string_header()
-            << ProbeConfig::to_string_header()
+            << BenchmarkConfig::to_string_header() << ","
+            << ProbeConfig::to_string_header() << ","
             << "probe_elements,"
             << "tuples_p_second";
         return string_stream.str(); 
