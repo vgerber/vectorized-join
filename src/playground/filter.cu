@@ -2,7 +2,7 @@
 #include <fstream>
 #include "benchmark/configuration.hpp"
 #include "benchmark/log.hpp"
-#include "config.h"
+#include "base/types.hpp"
 
 
 /**
@@ -263,7 +263,7 @@ int main(int argc, char **argv) {
     //int gpu_count[] = { 1, 2 };
     //int thread_count[] = { 32, 64, 128, 256, 512, 1024 };
     //uint block_count[] = { 32, 64, 128, 256, 512, 1024, UINT_MAX };
-
+    /*
     for(int run_index = 0; run_index < runs; run_index++) {
         std::cout << "Run " << (run_index+1) << "/" << runs << std::endl;
         for(auto gpu_count : benchmark_setup.gpus) {
@@ -285,6 +285,7 @@ int main(int argc, char **argv) {
             }
         }  
     }
+    */
 
     delete[] h_input;
     delete[] h_filter_result;
