@@ -107,7 +107,7 @@ int main(int argc, char **argv)
     bool gpu = true;
 
     int stream_count = benchmark_setup.max_streams;
-    index_t table_size = 100;
+    index_t table_size = 800;
 
     cudaStream_t *streams = new cudaStream_t[stream_count];
     for (int stream_index = 0; stream_index < stream_count; stream_index++)
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
         int column_count = benchmark_config.rs_join_columns;
         for (auto config : probe_configs)
         {
-            table_size = 100;
+            table_size = 800;
             //config.print();
             //print_mem();
             config_index++;
@@ -173,7 +173,7 @@ int main(int argc, char **argv)
                     tuples_p_second_avg += stream_count * (s_tables[0].size + r_tables[0].size) / (double)probe_dur.count();
                     //std::cout << " > " << tuples_p_second_avg << std::endl;
 
-                    //rs_table.print();
+                    //rs_tables[0].print();
 
                     for (int stream_index = 0; stream_index < stream_count; stream_index++)
                     {
