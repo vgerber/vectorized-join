@@ -21,13 +21,8 @@ struct BenchmarkSetup
     std::vector<int> probe_build_threads;
     std::vector<int> probe_build_n_per_threads;
 
-    // sum
-    std::vector<int> probe_sum_threads;
-    std::vector<int> probe_sum_n_per_threads;
-
     // extract
     std::vector<int> probe_extract_threads;
-    std::vector<int> probe_extract_x_threads;
     std::vector<int> probe_extract_n_per_threads;
 
     // launch
@@ -108,29 +103,19 @@ std::vector<ProbeConfig> get_probe_configs(BenchmarkSetup setup) {
     for(auto load : setup.probe_build_table_loads) {
         for(auto build_n_p_t : setup.probe_build_n_per_threads) {
             for(auto build_threads : setup.probe_build_threads) {
-                for(auto sum_n_p_t : setup.probe_sum_n_per_threads) {
-                    for(auto sum_threads : setup.probe_sum_threads) {
                         for(auto ex_n_p_t : setup.probe_extract_n_per_threads) {
                             for(auto ex_threads : setup.probe_extract_threads) {
-                                for(auto ex_x_threads : setup.probe_extract_x_threads) {
                                     ProbeConfig config;
                                     config.build_table_load = load;
                                     config.build_n_per_thread = build_n_p_t;
                                     config.build_threads = build_threads;
-                                    config.sum_n_per_thread = sum_n_p_t;
-                                    config.sum_threads = sum_threads;
                                     config.extract_n_per_thread = ex_n_p_t;
-                                    if(ex_threads % ex_x_threads == 0) {
-                                        config.extract_threads = dim3(ex_x_threads, ex_threads / ex_x_threads, 1);
-                                        configs.push_back(config);
-                                    }
+                                    config.extract_threads = ex_threads;
+                                    configs.push_back(config);
                                 }
                             }
                         }
                     }
-                }
-            }
-        }
     }
     return configs;
 }
@@ -175,49 +160,12 @@ bool load_probe_benchmark_setup(toml::value config_file, std::string profile, Be
         return false;
     }
 
-    // sum
-    field = "probe_build_n_per_threads";
-    std::cout << "Read " << field << std::endl;
-    if (config_file.at(profile).contains(field))
-    {
-        setup->probe_sum_n_per_threads = toml::find<std::vector<int>>(config_file, profile, field);
-    }
-    else
-    {
-        std::cout << profile << "." << field << " not found" << std::endl;
-        return false;
-    }
-
-    field = "probe_build_threads";
-    std::cout << "Read " << field << std::endl;
-    if (config_file.at(profile).contains(field))
-    {
-        setup->probe_sum_threads = toml::find<std::vector<int>>(config_file, profile, field);
-    }
-    else
-    {
-        std::cout << profile << "." << field << " not found" << std::endl;
-        return false;
-    }
-
     // extract
     field = "probe_extract_n_per_threads";
     std::cout << "Read " << field << std::endl;
     if (config_file.at(profile).contains(field))
     {
         setup->probe_extract_n_per_threads = toml::find<std::vector<int>>(config_file, profile, field);
-    }
-    else
-    {
-        std::cout << profile << "." << field << " not found" << std::endl;
-        return false;
-    }
-
-    field = "probe_extract_x_threads";
-    std::cout << "Read " << field << std::endl;
-    if (config_file.at(profile).contains(field))
-    {
-        setup->probe_extract_x_threads = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {

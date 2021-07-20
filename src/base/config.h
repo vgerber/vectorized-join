@@ -3,7 +3,7 @@
 #include <iostream>
 #include <bitset>
 
-#define PROBE_VERSION 0
+#define PROBE_VERSION 1
 
 #define ERROR_CHECK 0
 #define DEBUG_PRINT 0

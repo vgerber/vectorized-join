@@ -22,15 +22,12 @@ struct ProbeConfig
     int build_n_per_thread = 1;
     int build_threads;
 
-    int sum_n_per_thread = 1;
-    int sum_threads;
-
     int extract_n_per_thread = 1;
-    dim3 extract_threads;
+    int extract_threads;
 
     void print()
     {
-        printf("B(%f %d:%d) S(%d:%d) E(%d:(%d,%d))\n", build_table_load, build_n_per_thread, build_threads, sum_n_per_thread, sum_threads, extract_n_per_thread, extract_threads.x, extract_threads.y);
+        printf("B(%f %d:%d) E(%d:%d)\n", build_table_load, build_n_per_thread, build_threads, extract_n_per_thread, extract_threads);
     }
 
     int get_table_size(index_s_t elements)
@@ -57,11 +54,8 @@ struct ProbeConfig
             << "build_table_load,"
             << "build_n_per_thread,"
             << "build_threads,"
-            << "sum_n_per_thread,"
-            << "sum_threads,"
             << "extract_n_per_thread,"
-            << "extract_threads_x,"
-            << "extract_threads_y";
+            << "extract_threads";
         return string_stream.str();
     }
 
@@ -74,11 +68,8 @@ struct ProbeConfig
             << build_table_load << ","
             << build_n_per_thread << ","
             << build_threads << ","
-            << sum_n_per_thread << ","
-            << sum_threads << ","
             << extract_n_per_thread << ","
-            << extract_threads.x << ","
-            << extract_threads.y;
+            << extract_threads;
         return string_stream.str();
     }
 };
@@ -631,8 +622,8 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     d_joined_rs_table.gpu = true;
     d_joined_rs_table.data_owner = true;
 
-    int extract_blocks = ceil(d_joined_rs_table.size / (float)(config.extract_n_per_thread * (config.extract_threads.x * config.extract_threads.y)));
-    int extract_threads_per_block = config.extract_threads.x * config.extract_threads.y;
+    int extract_blocks = ceil(d_joined_rs_table.size / (float)(config.extract_n_per_thread * (config.extract_threads)));
+    int extract_threads_per_block = config.extract_threads;
     copy_probe_results_kernel<<<extract_blocks, extract_threads_per_block, 0, stream>>>(d_r_table, d_s_table, d_probe_results, d_joined_rs_table);
     //extract_probe_results_kernel<<<extract_blocks, config.extract_threads, 0, stream>>>(d_r_table, d_s_table, d_probe_results, d_probe_offsets_buffer, d_probe_sizes_buffer, d_joined_rs_table);
 
