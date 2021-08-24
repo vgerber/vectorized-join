@@ -25,6 +25,11 @@ struct ProbeConfig
     int extract_n_per_thread = 1;
     int extract_threads;
 
+    int max_r_elements = 2000;
+
+    index_s_t probe_buffer_size = 0;
+    index_s_t * d_probe_buffer = nullptr;
+
     void print()
     {
         printf("B(%f %d:%d) E(%d:%d)\n", build_table_load, build_n_per_thread, build_threads, extract_n_per_thread, extract_threads);
@@ -71,6 +76,10 @@ struct ProbeConfig
             << extract_n_per_thread << ","
             << extract_threads;
         return string_stream.str();
+    }
+
+    void free(cudaStream_t stream) {
+        cudaFreeAsync(d_probe_buffer, stream);
     }
 };
 

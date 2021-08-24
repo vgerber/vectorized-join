@@ -5,15 +5,24 @@
 #include <memory>
 #include <filesystem>
 
+struct HashBenchmarkSetup {
+    std::vector<int> hash_elements_sizes;
+    std::vector<std::string> hash_algorithms;
+
+};
+
 struct BenchmarkSetup
 {
     std::vector<int> gpus;
-    long elements = 0;
+    std::vector<long long> elements;
     int runs = 0;
     short int max_streams = 1;
     index_t element_max = 1000;
     std::vector<float> rs_scales;
     std::vector<int> rs_join_columns;
+
+    // hash
+    HashBenchmarkSetup hash_setup;
 
     // probe
     // build
@@ -27,6 +36,26 @@ struct BenchmarkSetup
 
     // launch
     std::string output_file_path;
+};
+
+struct HashBenchmarkConfig {
+    std::string algorithm;
+    int element_size;
+
+
+    static std::string to_string_header() {
+        std::ostringstream string_stream;
+        string_stream << "elements_size,"
+            << "algorithm";
+        return string_stream.str();
+    }
+
+    std::string to_string() {
+        std::ostringstream string_stream;
+        string_stream << element_size << ","
+            << algorithm;
+        return string_stream.str();
+    }
 };
 
 struct BenchmarkConfig {
@@ -45,7 +74,8 @@ struct BenchmarkConfig {
             << "elements,"
             << "rs_scale,"
             << "rs_join_columns,"
-            << "max_streams_p_gpu";
+            << "max_streams_p_gpu,"
+            << "hash_bytes";
         return string_stream.str();
     }
 
@@ -56,7 +86,8 @@ struct BenchmarkConfig {
             << elements << ","
             << rs_scale << ","
             << rs_join_columns << ","
-            << max_streams_p_gpu;
+            << max_streams_p_gpu << ","
+            << sizeof(hash_t);
         return string_stream.str();
     }
 };
@@ -77,47 +108,41 @@ struct BenchmarkRunConfig
     }
 };
 
-std::vector<BenchmarkConfig> get_benchmark_configs(BenchmarkSetup setup) {
-    std::vector<BenchmarkConfig> configs;
-    for(auto gpus : setup.gpus) {
-        for(auto rs_scale : setup.rs_scales) {
-            for(auto rs_join_columns : setup.rs_join_columns) {
-                BenchmarkConfig config;
-                config.gpus = gpus;
-                config.element_max = setup.element_max;
-                config.elements = setup.elements;
-                config.max_streams_p_gpu = setup.max_streams;
-                config.rs_scale = rs_scale;
-                config.rs_join_columns = rs_join_columns;
-                config.runs = setup.runs;
-                configs.push_back(config);
-            }
+std::vector<HashBenchmarkConfig> get_hash_benchmark_configs(BenchmarkSetup setup) {
+    std::vector<HashBenchmarkConfig> configs;
+    for(auto element_size : setup.hash_setup.hash_elements_sizes) {
+        for(auto algorithm : setup.hash_setup.hash_algorithms) {
+            HashBenchmarkConfig config;
+            config.element_size = element_size;
+            config.algorithm = algorithm;
+            configs.push_back(config);
         }
     }
     return configs;
 }
 
-std::vector<ProbeConfig> get_probe_configs(BenchmarkSetup setup) {
-    std::vector<ProbeConfig> configs;
 
-    for(auto load : setup.probe_build_table_loads) {
-        for(auto build_n_p_t : setup.probe_build_n_per_threads) {
-            for(auto build_threads : setup.probe_build_threads) {
-                        for(auto ex_n_p_t : setup.probe_extract_n_per_threads) {
-                            for(auto ex_threads : setup.probe_extract_threads) {
-                                    ProbeConfig config;
-                                    config.build_table_load = load;
-                                    config.build_n_per_thread = build_n_p_t;
-                                    config.build_threads = build_threads;
-                                    config.extract_n_per_thread = ex_n_p_t;
-                                    config.extract_threads = ex_threads;
-                                    configs.push_back(config);
-                                }
-                            }
-                        }
-                    }
+std::vector<BenchmarkConfig> get_benchmark_configs(BenchmarkSetup setup) {
+    std::vector<BenchmarkConfig> configs;
+    for(auto gpus : setup.gpus) {
+        for(auto rs_scale : setup.rs_scales) {
+            for(auto rs_join_columns : setup.rs_join_columns) {
+                for(auto elements : setup.elements) {
+                    BenchmarkConfig config;
+                    config.gpus = gpus;
+                    config.element_max = setup.element_max;
+                    config.elements = elements;
+                    config.max_streams_p_gpu = setup.max_streams;
+                    config.rs_scale = rs_scale;
+                    config.rs_join_columns = rs_join_columns;
+                    config.runs = setup.runs;
+                    configs.push_back(config);
+                }
+            }
+        }
     }
     return configs;
+
 }
 
 bool load_probe_benchmark_setup(toml::value config_file, std::string profile, BenchmarkSetup *setup)
@@ -185,6 +210,33 @@ bool load_probe_benchmark_setup(toml::value config_file, std::string profile, Be
         return false;
     }
 
+    return true;
+}
+
+bool load_hash_benchmark_setup(toml::value config_file, std::string profile, BenchmarkSetup *setup) {
+    std::string field = "hash_elements_sizes";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->hash_setup.hash_elements_sizes = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "hash_algorithms";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->hash_setup.hash_algorithms = toml::find<std::vector<std::string>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
     return true;
 }
 
@@ -287,11 +339,15 @@ bool load_benchmark_setup(std::string path, std::string profile, BenchmarkSetup 
             return false;
         }
 
+        if(!load_hash_benchmark_setup(config_file, profile, setup)) {
+            return false;
+        }
+
         std::string field = "elements";
         std::cout << "Read " << field << std::endl;
         if (config_file.at(profile).contains(field))
         {
-            setup->elements = toml::find<long>(config_file, profile, field);
+            setup->elements = toml::find<std::vector<long long>>(config_file, profile, field);
         }
         else
         {
