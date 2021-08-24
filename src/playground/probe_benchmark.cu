@@ -36,6 +36,29 @@ struct ProbeBenchmarkConfig
     }
 };
 
+std::vector<ProbeConfig> get_probe_configs(BenchmarkSetup setup) {
+    std::vector<ProbeConfig> configs;
+
+    for(auto load : setup.probe_build_table_loads) {
+        for(auto build_n_p_t : setup.probe_build_n_per_threads) {
+            for(auto build_threads : setup.probe_build_threads) {
+                        for(auto ex_n_p_t : setup.probe_extract_n_per_threads) {
+                            for(auto ex_threads : setup.probe_extract_threads) {
+                                    ProbeConfig config;
+                                    config.build_table_load = load;
+                                    config.build_n_per_thread = build_n_p_t;
+                                    config.build_threads = build_threads;
+                                    config.extract_n_per_thread = ex_n_p_t;
+                                    config.extract_threads = ex_threads;
+                                    configs.push_back(config);
+                                }
+                            }
+                        }
+                    }
+    }
+    return configs;
+}
+
 void hash_table(db_table table, db_hash_table &hash_table)
 {
     hash_table.size = table.size;
