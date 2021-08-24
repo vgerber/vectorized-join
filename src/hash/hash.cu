@@ -124,10 +124,10 @@ void hash_custom_mult(index_t element_buffer_size, short int element_size, short
         chunk_t * chunked_element_buffer = reinterpret_cast<chunk_t*>(&element_buffer[buffer_index]);
         for(short int chunk_index = 0; chunk_index < element_chunks; chunk_index++) {
             chunk_t chunk = chunked_element_buffer[chunk_index];
-            hash = (hash * ((hash_t) chunk.x+1)) % get_max_value(sizeof(hash_t));
-            hash = (hash * ((hash_t) chunk.y+1)) % get_max_value(sizeof(hash_t));
-            hash = (hash * ((hash_t) chunk.z+1)) % get_max_value(sizeof(hash_t));
-            hash = (hash * ((hash_t) chunk.w+1)) % get_max_value(sizeof(hash_t));
+            hash = (hash * ((hash_t) chunk.x+1)); //% get_max_value(sizeof(hash_t));
+            hash = (hash * ((hash_t) chunk.y+1)); //% get_max_value(sizeof(hash_t));
+            hash = (hash * ((hash_t) chunk.z+1)); //% get_max_value(sizeof(hash_t));
+            hash = (hash * ((hash_t) chunk.w+1)); //% get_max_value(sizeof(hash_t));
         }
         
         hashed_buffer[element_index] = hash;
