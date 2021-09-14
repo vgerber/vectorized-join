@@ -2,7 +2,7 @@
 #include "config.h"
 #include "debug.cuh"
 
-typedef uint32_t hash_t;
+typedef unsigned long long hash_t;
 typedef unsigned long long index_t;
 typedef unsigned int index_s_t;
 typedef unsigned long long column_t;
@@ -44,21 +44,36 @@ struct db_hash_table {
     }
 
     void print() const {
+        hash_t *h_hashes;
+        if(gpu) {
+            h_hashes = new hash_t[size];
+            gpuErrchk(cudaMemcpy(h_hashes, hashes, size * sizeof(hash_t), cudaMemcpyDeviceToHost));
+            
+        } else {
+            h_hashes = hashes;
+        }
+
         for(index_t hash_index = 0; hash_index < size; hash_index++) {
-            std::cout << std::bitset<sizeof(hash_t) * 8>(hashes[hash_index]) << "::" << hashes[hash_index] << std::endl;
+            std::cout << std::bitset<sizeof(hash_t) * 8>(h_hashes[hash_index]) << "::" << h_hashes[hash_index] << std::endl;
+        }
+
+        if(gpu) {
+            delete[] h_hashes;
         }
     } 
 
     void free() {
         if(data_owner) {
             if(gpu) {
-                cudaFree(hashes);
-                cudaFree(indices);
+                gpuErrchk(cudaFree(hashes));
+                gpuErrchk(cudaFree(indices));
             } else {
                 delete[] hashes;
                 delete[] indices;
             }
         }
+        hashes = nullptr;
+        indices = nullptr;
     }
 };
 
@@ -110,6 +125,9 @@ struct db_table {
             if(gpu) {
                 table_copy.column_values = new column_t[table_copy.size * table_copy.column_count];
                 gpuErrchk(cudaMemcpy(table_copy.column_values, column_values, table_copy.size * table_copy.column_count * sizeof(column_t), cudaMemcpyDeviceToHost));
+            } else {
+                table_copy.column_values = new column_t[table_copy.size * table_copy.column_count];
+                memcpy(table_copy.column_values, column_values, table_copy.size * table_copy.column_count * sizeof(column_t));
             }
         }
         return table_copy;
@@ -130,18 +148,23 @@ struct db_table {
             }
             std::cout << std::endl;
         }
-        h_table.free();
+
+        if(gpu) {
+            h_table.free();
+        }
     }
 
     void free() {
-        if(data_owner) {
-            if(gpu) {
-                gpuErrchk(cudaFree(column_values));
-            } else {
-                delete[] column_values;
+        if(size > 0) {
+            if(data_owner) {
+                if(gpu) {
+                    gpuErrchk(cudaFree(column_values));
+                } else {
+                    delete[] column_values;
+                }
             }
+            column_values = nullptr;
         }
-        column_values = nullptr;
     }
 };
 

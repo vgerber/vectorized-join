@@ -25,10 +25,12 @@ struct ProbeConfig
     int extract_n_per_thread = 1;
     int extract_threads;
 
-    int max_r_elements = 2000;
+    int max_r_elements = 3200;
 
+    index_s_t max_probe_buffer_size = 0;
     index_s_t probe_buffer_size = 0;
-    index_s_t * d_probe_buffer = nullptr;
+    index_s_t *d_probe_buffer = nullptr;
+    index_s_t *d_probe_result_size = nullptr;
 
     void print()
     {
@@ -50,36 +52,14 @@ struct ProbeConfig
         return build_table_load * elements;
     }
 
-    static std::string to_string_header()
-    {
-        std::ostringstream string_stream;
-        string_stream
-            << "probe_version,"
-            << "probe_mode,"
-            << "build_table_load,"
-            << "build_n_per_thread,"
-            << "build_threads,"
-            << "extract_n_per_thread,"
-            << "extract_threads";
-        return string_stream.str();
-    }
 
-    std::string to_string()
-    {
-        std::ostringstream string_stream;
-        string_stream
-            << PROBE_VERSION << ","
-            << PROBE_MODE << ","
-            << build_table_load << ","
-            << build_n_per_thread << ","
-            << build_threads << ","
-            << extract_n_per_thread << ","
-            << extract_threads;
-        return string_stream.str();
-    }
 
-    void free(cudaStream_t stream) {
-        cudaFreeAsync(d_probe_buffer, stream);
+    void free(cudaStream_t stream)
+    {
+        gpuErrchk(cudaFreeAsync(d_probe_buffer, stream));
+        gpuErrchk(cudaFreeAsync(d_probe_result_size, stream));
+        d_probe_buffer = nullptr;
+        d_probe_result_size = nullptr;
     }
 };
 
@@ -225,7 +205,6 @@ __device__ void partial_probe_kernel(db_table r_table, db_table s_table, db_hash
         index_s_t s_slot = s_key % slots;
 
         index_s_t table_index = table_slots[s_slot];
-        index_s_t probe_size = 0;
         while (table_index)
         {
             // compare hash of table r (build) and s (probe)
@@ -250,9 +229,9 @@ __device__ void partial_probe_kernel(db_table r_table, db_table s_table, db_hash
                 }
 
                 // table entries do match if both table entries have the same column values
-                filter_mask probe_result = column_equal_counter == (r_table.column_count - 1);
-                probe_results[atomicAdd(probe_results_size, 1)] = probe_index;
-                probe_size += (index_t)probe_result;
+                if(column_equal_counter == (r_table.column_count - 1)) {
+                    probe_results[atomicAdd(probe_results_size, 1)] = probe_index;
+                }
             }
             table_index = table_links[table_index];
         }
@@ -344,7 +323,7 @@ __global__ void prefix_sum_kernel(index_s_t buffer_size, index_s_t *input_buffer
 
 __global__ void copy_probe_results_kernel(db_table r_table, db_table s_table, index_s_t *indices, db_table rs_table)
 {
-    int columns = rs_table.column_count / 2;
+    int rs_half_column_count = rs_table.column_count / 2;
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
     for (index_s_t buffer_index = index; buffer_index < rs_table.size; buffer_index += stride)
@@ -352,11 +331,12 @@ __global__ void copy_probe_results_kernel(db_table r_table, db_table s_table, in
         index_s_t copy_index = indices[buffer_index];
         index_s_t s_index = copy_index / r_table.size;
         index_s_t r_index = copy_index % r_table.size;
-        
-        for (int column_index = 0; column_index < columns; column_index++)
+
+        index_s_t rs_offset = buffer_index * rs_table.column_count;
+        for (int column_index = 0; column_index < rs_half_column_count; column_index++)
         {
-            rs_table.column_values[buffer_index * rs_table.column_count + column_index] = r_table.column_values[r_index * r_table.column_count + column_index];
-            rs_table.column_values[buffer_index * rs_table.column_count + column_index + columns] = s_table.column_values[s_index * s_table.column_count + column_index];
+            rs_table.column_values[rs_offset + column_index] = r_table.column_values[r_index * r_table.column_count + column_index];
+            rs_table.column_values[rs_offset + column_index + rs_half_column_count] = s_table.column_values[s_index * s_table.column_count + column_index];
         }
     }
 }
@@ -478,7 +458,7 @@ void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_tabl
 #if BENCHMARK_PART
     cudaEventRecord(hist_start, stream);
 #endif
-    histogram_kernel<<<1, 1, 0, stream>>>(d_hash_table.size, d_hash_table.hashes, bins, d_histogram, radix_shift, radix_mask);
+    histogram_kernel<<<max(1ULL, d_hash_table.size / 256), 256, 0, stream>>>(d_hash_table.size, d_hash_table.hashes, bins, d_histogram, radix_shift, radix_mask);
 #if BENCHMARK_PART
     cudaEventRecord(hist_end, stream);
 #endif
@@ -512,7 +492,6 @@ void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_tabl
 #if BENCHMARK_PART
     cudaEventRecord(swap_end, stream);
 #endif
-    std::cout << d_histogram << std::endl;
     gpuErrchk(cudaFreeAsync(d_histogram, stream));
     gpuErrchk(cudaFreeAsync(d_offsets, stream));
     gpuErrchk(cudaFreeAsync(d_dest_indices, stream));
@@ -540,7 +519,7 @@ struct is_greater_zero
     }
 };
 
-void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_table d_s_table, db_hash_table d_s_hash_table, db_table &d_joined_rs_table, int key_offset, cudaStream_t stream, ProbeConfig config)
+void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_table d_s_table, db_hash_table d_s_hash_table, db_table &d_joined_rs_table, int key_offset, cudaStream_t stream, ProbeConfig &config)
 {
     // MAX-Q / Quadro / Turing 7.5
     // 32 Shared Banks
@@ -563,12 +542,22 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
         cudaEventCreate(&events[event_index*2+1]);
     }
     */
+    // allocate probe buffer
+    // keep old buffer or extend to bigger buffer
+    config.probe_buffer_size = d_r_hash_table.size * d_s_hash_table.size;
+    if (config.max_probe_buffer_size < config.probe_buffer_size)
+    {
+        if(config.d_probe_buffer) {
+            gpuErrchk(cudaFreeAsync(config.d_probe_buffer, stream));
+        }
+        gpuErrchk(cudaMallocAsync(&config.d_probe_buffer, config.probe_buffer_size * sizeof(index_s_t), stream));
+        config.max_probe_buffer_size = config.probe_buffer_size;
+    }
 
-    index_s_t *d_probe_results_size = nullptr;
-    index_s_t *d_probe_results = nullptr;
-    gpuErrchk(cudaMallocAsync(&d_probe_results, d_r_hash_table.size * d_s_hash_table.size * sizeof(index_s_t), stream));
-    gpuErrchk(cudaMallocAsync(&d_probe_results_size, sizeof(index_s_t), stream));
-    gpuErrchk(cudaMemsetAsync(d_probe_results_size, 0, sizeof(index_s_t), stream));
+    if(!config.d_probe_result_size) {
+        gpuErrchk(cudaMallocAsync(&config.d_probe_result_size, sizeof(index_s_t), stream));
+    }
+    gpuErrchk(cudaMemsetAsync(config.d_probe_result_size, 0, sizeof(index_s_t), stream));
 #if PROBE_MODE == 0
 
     assert(1024 % config.build_threads.x == 0);
@@ -587,7 +576,10 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     int blocks = ceil(d_s_hash_table.size / (float)(config.build_threads * config.build_n_per_thread));
     int shared_mem = config.get_table_size(d_r_hash_table.size, slots);
     //assert(shared_mem <= 49000);
-    build_and_partial_probe_kernel<<<blocks, config.build_threads, shared_mem, stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, d_probe_results_size, d_probe_results, key_offset, slots);
+
+    assert(blocks> 0);
+    assert(config.build_threads > 0);
+    build_and_partial_probe_kernel<<<blocks, config.build_threads, shared_mem, stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots);
 #endif
     /*
     index_s_t *d_probe_offsets_buffer = nullptr;
@@ -621,26 +613,26 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     thrust::copy_if(thrust::cuda::par.on(stream), td_probe_results, td_probe_results + (d_s_hash_table.size * d_r_hash_table.size), td_probe_results, probe_result_reduced, is_greater_zero());
     */
 
-    d_joined_rs_table.column_count = 2;
-    gpuErrchk(cudaMemcpyAsync(&d_joined_rs_table.size, d_probe_results_size, sizeof(index_s_t), cudaMemcpyDeviceToHost, stream));
-    cudaStreamSynchronize(stream);
-    gpuErrchk(cudaGetLastError());
-
-    gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), stream));
-    gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), stream));
+    d_joined_rs_table.column_count = 2; // d_r_table.column_count + d_s_table.column_count;
     d_joined_rs_table.gpu = true;
     d_joined_rs_table.data_owner = true;
+    gpuErrchk(cudaMemcpyAsync(&d_joined_rs_table.size, config.d_probe_result_size, sizeof(index_s_t), cudaMemcpyDeviceToHost, stream));
+    gpuErrchk(cudaStreamSynchronize(stream));
+    gpuErrchk(cudaGetLastError());
 
-    int extract_blocks = ceil(d_joined_rs_table.size / (float)(config.extract_n_per_thread * (config.extract_threads)));
-    int extract_threads_per_block = config.extract_threads;
-    copy_probe_results_kernel<<<extract_blocks, extract_threads_per_block, 0, stream>>>(d_r_table, d_s_table, d_probe_results, d_joined_rs_table);
-    //extract_probe_results_kernel<<<extract_blocks, config.extract_threads, 0, stream>>>(d_r_table, d_s_table, d_probe_results, d_probe_offsets_buffer, d_probe_sizes_buffer, d_joined_rs_table);
+    if(d_joined_rs_table.size > 0) {
+        gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), stream));
+        gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), stream));
 
+        int extract_blocks = max(1ULL, d_joined_rs_table.size / (config.extract_n_per_thread * config.extract_threads));
+        int extract_threads_per_block = config.extract_threads;
+        assert(extract_blocks > 0);
+        assert(extract_threads_per_block > 0);
+        copy_probe_results_kernel<<<extract_blocks, extract_threads_per_block, 0, stream>>>(d_r_table, d_s_table, config.d_probe_buffer, d_joined_rs_table);
+        //extract_probe_results_kernel<<<extract_blocks, config.extract_threads, 0, stream>>>(d_r_table, d_s_table, d_probe_results, d_probe_offsets_buffer, d_probe_sizes_buffer, d_joined_rs_table);
+    }
     //cudaFreeAsync(d_probe_offsets_buffer, stream);
     //cudaFreeAsync(d_probe_result_reduced, stream);
-    cudaFreeAsync(d_probe_results_size, stream);
-    cudaFreeAsync(d_probe_results, stream);
-
     /*
     cudaEventSynchronize(events[9]);
     for(int e_index = 0; e_index < event_count; e_index++) {
@@ -651,4 +643,4 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
         printf("%d-%d %F\n", e_index*2, e_index*2+1, ms);
     }
     */
-}   
+}
