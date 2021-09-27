@@ -2,6 +2,10 @@
 #include "benchmark/data_generator.hpp"
 #include "benchmark/configuration.hpp"
 
+#include "json.hpp"
+
+using json = nlohmann::json;
+
 struct JoinBenchmarkResults {
     JoinSummary join_summary;
     BenchmarkConfig benchmark_config;
@@ -38,6 +42,57 @@ struct JoinBenchmarkResults {
         return string_stream.str();
     }
 };
+
+void store_join_summary(json &parent_json, JoinSummary summary, int id) {
+    json summary_json;
+    summary_json["rs_elements"] = summary.rs_elements;
+    summary_json["r_elements"] = summary.r_elements;
+    summary_json["s_elements"] = summary.s_elements;
+    summary_json["hash_tuples_p_second"] = summary.hash_tuples_p_second;
+    summary_json["partition_tuples_p_second"] = summary.partition_tuples_p_second;
+    summary_json["probe_tuples_p_second"] = summary.probe_tuples_p_second;
+    summary_json["merge_tuples_p_second"] = summary.merge_tuples_p_second;
+    summary_json["join_tuples_p_second"] = summary.join_tuples_p_second;
+    json hash_summaries_json = json::array();
+    for(auto hash_summary : summary.hash_summaries) {
+        json hash_summary_json;
+        hash_summary_json["k_tuples_p_second"] = hash_summary.k_tuples_p_seconds;
+        hash_summary_json["k_gb_p_second"] = hash_summary.k_gb_p_seconds;
+        hash_summary_json["elements"] = hash_summary.elements;
+        hash_summary_json["element_bytes"] = hash_summary.element_bytes;
+        hash_summary_json["element_offset"] = hash_summary.element_offset;
+        hash_summary_json["algorithm"] = hash_summary.algorithm;
+        hash_summaries_json.push_back(hash_summary_json);
+    }
+    summary_json["hash_summaries"] = hash_summaries_json;
+
+    json partition_summaries_json = json::array();
+    for(auto partition_summary : summary.partition_summaries) {
+        json partition_summary_json;
+        partition_summary_json["elements"] = partition_summary.elements;
+        partition_summary_json["k_histogram_tuples_p_second"] = partition_summary.k_histrogram_elements_p_second;
+        partition_summary_json["k_histogram_gb_p_second"] = partition_summary.k_histrogram_gb_p_second;
+        partition_summary_json["k_swap_tuples_p_second"] = partition_summary.k_swap_elements_p_second;
+        partition_summary_json["k_swap_gb_p_second"] = partition_summary.k_swap_gb_p_second;
+        partition_summaries_json.push_back(partition_summary_json);
+    }
+    summary_json["partition_summaries"] = partition_summaries_json;
+
+    json probe_summaries_json = json::array();
+    for(auto probe_summary : summary.probe_summaries) {
+        json probe_summary_json;
+        probe_summary_json["k_build_probe_tuples_p_second"] = probe_summary.k_build_probe_tuples_p_second;
+        probe_summary_json["k_build_probe_gb_p_second"] = probe_summary.k_build_probe_gb_p_second;
+        probe_summary_json["k_extract_tuples_p_second"] = probe_summary.k_extract_tuples_p_second;
+        probe_summary_json["k_extract_gb_p_second"] = probe_summary.k_extract_gb_p_second;
+        probe_summary_json["r_elements"] = probe_summary.r_elements;
+        probe_summary_json["s_elements"] = probe_summary.s_elements;
+        probe_summary_json["rs_elements"] = probe_summary.rs_elements;
+        probe_summaries_json.push_back(probe_summary_json);
+    }
+    summary_json["probe_summaries"] = probe_summaries_json;
+    parent_json[id] = summary_json;
+} 
 
 void verify(db_table expected, db_table actual) {
     int error_count = 0;
@@ -128,6 +183,8 @@ int main(int argc, char **argv)
 
     bool gpu = true;
 
+
+    json profile_json;
     int config_index = 0;
     for (BenchmarkConfig benchmark_config : benchmark_configs)
     {
@@ -144,6 +201,7 @@ int main(int argc, char **argv)
                 probe_config.d_probe_buffer = nullptr;
 
                 JoinConfig join_config;
+                join_config.profile_enabled = benchmark_config.profile;
                 join_config.devices = benchmark_config.gpus;
                 join_config.tasks_p_device = benchmark_config.max_streams_p_gpu;
                 join_config.probe_config = probe_config;
@@ -174,7 +232,7 @@ int main(int argc, char **argv)
                         db_table s_copy_table = s_table.copy(false);
 
                         join_provider.join(r_table, s_table, rs_table);
-                        
+                        store_join_summary(profile_json, join_provider.get_join_summary(), config_index);
                         
                         db_table rs_expected_table;
                         join_provider.join(r_copy_table, s_copy_table, rs_expected_table);
@@ -191,6 +249,7 @@ int main(int argc, char **argv)
 
                     } else {
                         join_provider.join(r_table, s_table, rs_table);
+                        store_join_summary(profile_json, join_provider.get_join_summary(), config_index);
                     }
 
                     r_table.free();
@@ -211,6 +270,9 @@ int main(int argc, char **argv)
             }            
         }
     }
+    std::fstream run_profile_stream;
+    run_profile_stream.open((benchmark_setup.output_file_path + "/run_profile.json"), std::ios::app);
+    run_profile_stream << profile_json.dump(1) << std::endl;
 
     return 0;
 }

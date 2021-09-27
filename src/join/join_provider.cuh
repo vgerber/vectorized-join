@@ -68,12 +68,23 @@ struct bucket_pair_comparator {
 
 struct JoinSummary {
     float hash_tuples_p_second = 0.0;
+    std::vector<HashSummary> hash_summaries;
+
     float partition_tuples_p_second = 0.0;
+    std::vector<PartitionSummary> partition_summaries;
+
     float probe_tuples_p_second = 0.0;
+    std::vector<ProbeSummary> probe_summaries;
+
     float merge_tuples_p_second = 0.0;
+    float merge_gb_p_second = 0.0;
+
     float join_tuples_p_second = 0.0;
     float join_gb_p_second = 0.0;
-    index_t joins = 0;
+
+    index_t r_elements = 0;
+    index_t s_elements = 0;
+    index_t rs_elements = 0;
 
 
     JoinSummary& operator+=(const JoinSummary &js) {
@@ -83,7 +94,7 @@ struct JoinSummary {
         merge_tuples_p_second += js.merge_tuples_p_second;
         join_tuples_p_second += js.join_tuples_p_second;
         join_gb_p_second += js.join_gb_p_second;
-        joins += js.joins;
+        rs_elements += js.rs_elements;
         return *this;
     }
 
@@ -94,7 +105,7 @@ struct JoinSummary {
         merge_tuples_p_second /= factor;
         join_tuples_p_second /= factor;
         join_gb_p_second /= factor;
-        joins /= factor;
+        rs_elements /= factor;
         return *this;
     }
 
@@ -103,7 +114,7 @@ struct JoinSummary {
         std::cout << "Partition " << partition_tuples_p_second << " Tuples/s" << std::endl;
         std::cout << "Probe     " << probe_tuples_p_second << " Tuples/s" << std::endl;
         std::cout << "Merge     " << merge_tuples_p_second << " Tuples/s" << std::endl;
-        std::cout << joins << " Joins " << join_tuples_p_second << " Tuples/s" << join_gb_p_second << " GB/s" <<std::endl;
+        std::cout << rs_elements << " Joins " << join_tuples_p_second << " Tuples/s" << join_gb_p_second << " GB/s" <<std::endl;
     }
 
 };
@@ -111,24 +122,30 @@ struct JoinSummary {
 struct JoinConfig {
     int tasks_p_device = 1;
     int devices = 1;
+    bool profile_enabled = true;
 
     HashConfig hash_config;
+    PartitionConfig partition_config;
     ProbeConfig probe_config;
-    
 };
 
 struct DeviceConfig
 {
     int device_id = 0;
     
-
     std::vector<cudaStream_t> streams;
     std::vector<ProbeConfig> stream_probe_configurations;
+    std::vector<PartitionConfig> stream_partition_configurations;
+
+    bool profile_enabled = false;
+    std::vector<cudaEvent_t> profiling_events;
+    
+    
 
     void free() {
         for(int  probe_config_index = 0; probe_config_index < stream_probe_configurations.size(); probe_config_index++) {
             cudaStream_t stream = streams[probe_config_index];
-            stream_probe_configurations[probe_config_index].free(stream);
+            stream_probe_configurations[probe_config_index].free();
         }
 
         stream_probe_configurations.clear();
@@ -137,16 +154,31 @@ struct DeviceConfig
             cudaStreamDestroy(stream);
         }
         streams.clear();
+
+        for(auto profiling_event : profiling_events) {
+            cudaEventDestroy(profiling_event);
+        }
+        profiling_events.clear();
+
+        for(auto &probe_config : stream_probe_configurations) {
+            probe_config.free();
+        }
+        stream_partition_configurations.clear();
+
+        for(auto &partition_config : stream_partition_configurations) {
+            partition_config.free();
+        }
+        stream_partition_configurations.clear();
     }
 
-    int get_next_stream_index() {
+    int get_next_queue_index() {
         const std::lock_guard<std::mutex> lock(device_mutex);
         next_stream_index = (next_stream_index + 1) % streams.size(); 
         return next_stream_index;
     }
 
-    cudaStream_t get_next_stream() {
-        return streams[get_next_stream_index()];
+    std::pair<cudaEvent_t, cudaEvent_t> get_profiling_events(int stream_index) {
+        return std::make_pair(profiling_events[stream_index*2], profiling_events[stream_index*2+1]);
     }
 
     void synchronize_device() {
@@ -240,26 +272,25 @@ public:
         std::cout << "Join " << std::endl;
 #endif
 
-        int buckets = 2;
+        int buckets = 8;
         int radix_width = std::ceil(std::log2(buckets));
         int bins = (1 << radix_width);
 
         int max_radix_steps = (8 * sizeof(index_t)) / radix_width;
         int max_bucket_r_elements = join_config.probe_config.max_r_elements;
 
-        db_hash_table r_hash_table;
+        db_hash_table r_hash_table(r_table.size, r_table.gpu);
         db_hash_table r_hash_table_swap(r_table.size, r_table.gpu);
         db_table r_table_swap(r_table.column_count, r_table.size, r_table.gpu);
 
-        db_hash_table s_hash_table;
+        db_hash_table s_hash_table(s_table.size, r_table.gpu);
         db_hash_table s_hash_table_swap(s_table.size, s_table.gpu);
         db_table s_table_swap(s_table.column_count, s_table.size, s_table.gpu);
 
         auto hash_start = std::chrono::high_resolution_clock::now();
         hash_table(r_table, r_hash_table, devices[0], join_config.hash_config);
         hash_table(s_table, s_hash_table, devices[0], join_config.hash_config);
-        auto hash_end = std::chrono::high_resolution_clock::now();
-
+        
         BucketConfig r_bucket_config;
         r_bucket_config.buckets = bins;
         r_bucket_config.table = r_table;
@@ -275,6 +306,7 @@ public:
         for(auto device : devices) {
             device->synchronize_device();
         }
+        auto hash_end = std::chrono::high_resolution_clock::now();
 
         auto partition_start = std::chrono::high_resolution_clock::now();
         partition_r_recursive(r_table_swap, r_hash_table_swap, radix_width, &r_bucket_config, max_bucket_r_elements, max_radix_steps, devices[0], true);
@@ -294,6 +326,7 @@ public:
             device->synchronize_device();
         }
         
+
         r_hash_table.free();
         r_hash_table_swap.free();
         r_table_swap.free();
@@ -302,9 +335,14 @@ public:
         s_hash_table_swap.free();
         s_table_swap.free();
 
+        bucket_pairs.clear();
+
+
         auto merge_start = std::chrono::high_resolution_clock::now();
         merge_joined_tables(joined_rs_tables, joined_rs_table, devices[0]);
         auto merge_end = std::chrono::high_resolution_clock::now();
+
+        joined_rs_tables.clear();
 
         auto join_end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> join_druation = (join_end - join_start);
@@ -317,26 +355,11 @@ public:
         join_summary.partition_tuples_p_second = ((r_table.size + s_table.size) / partition_druation.count());
         join_summary.probe_tuples_p_second = ((r_table.size + s_table.size) / probe_druation.count());
         join_summary.merge_tuples_p_second = ((r_table.size + s_table.size) / merge_druation.count());
-        join_summary.join_tuples_p_second = ((r_table.size + s_table.size) / join_druation.count());
-        join_summary.join_gb_p_second = (((r_table.size + s_table.size) * r_table.column_count * sizeof(column_t) / pow(10, 9)) / join_druation.count());
-        join_summary.joins = joined_rs_table.size;
-
-        
-
-
-#if DEBUG_PRINT
-        std::cout << "Bucket Hist:" << std::endl;
-        std::vector<int> hist_buckets(max_radix_steps);
-        for(auto bucket_it = bucket_pairs.begin(); bucket_it != bucket_pairs.end(); bucket_it++) {
-            int bin = bucket_it->first->bucket_depth;
-            hist_buckets[bin]++;
-        }
-        for(int hist_buckets_index = 0; hist_buckets_index < hist_buckets.size(); hist_buckets_index++) {
-            if(hist_buckets[hist_buckets_index]) {
-                std::cout << hist_buckets_index << ":" << hist_buckets[hist_buckets_index] << std::endl;
-            }
-        }
-#endif
+        join_summary.join_tuples_p_second = ((r_table.size * s_table.size) / join_druation.count());
+        join_summary.join_gb_p_second = (r_table.size + s_table.size) * r_table.column_count * sizeof(column_t) / pow(10, 9) / join_druation.count();
+        join_summary.rs_elements = joined_rs_table.size;
+        join_summary.r_elements = r_table.size;
+        join_summary.s_elements = s_table.size;
     }
 
 
@@ -347,6 +370,7 @@ public:
     ~JoinProvider() {
         for(auto device : devices) {
             device->free();
+            delete device;
         }
     }
 
@@ -362,11 +386,35 @@ private:
     {
         DeviceConfig *device_config = new DeviceConfig();
         device_config->device_id = devices.size();
+        device_config->profile_enabled = join_config.profile_enabled;
         cudaSetDevice(device_config->device_id);
         for(int stream_index = 0; stream_index < join_config.tasks_p_device; stream_index++) {
             cudaStream_t stream;
             cudaStreamCreate(&stream);
+            
             device_config->streams.push_back(stream);
+
+
+            ProbeConfig probe_config = join_config.probe_config;
+            probe_config.stream = stream;
+
+            PartitionConfig partition_config = join_config.partition_config;
+            partition_config.stream = stream;
+
+            if(join_config.profile_enabled) {
+                cudaEvent_t e_start, e_end;
+                cudaEventCreate(&e_start);
+                cudaEventCreate(&e_end);
+                device_config->profiling_events.push_back(e_start);
+                device_config->profiling_events.push_back(e_end);
+            
+                probe_config.enable_profiling(e_start, e_end);
+                partition_config.enable_profiling(e_start, e_end);
+            }
+
+            device_config->stream_partition_configurations.push_back(partition_config);
+            device_config->stream_probe_configurations.push_back(probe_config);
+            
         }
         
 
@@ -393,10 +441,17 @@ private:
             bucket_config->offsets = new index_t[buckets];
             bucket_config->sub_buckets = new BucketConfig[bucket_config->buckets];
 
+
             if (gpu)
             {
                 //std::cout << "P " << bucket_config << " -> " << bucket_config->table.size << ":" << r_table_swap.size << std::endl;
-                partition_gpu(bucket_config->table, bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, device_config->get_next_stream());
+                
+                int stream_index = device_config->get_next_queue_index();
+                PartitionConfig partition_config = device_config->stream_partition_configurations[stream_index];
+                partition_config.set_radix_width(radix_width);
+                partition_gpu(bucket_config->table, bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, index_data, partition_config);
+            
+                join_summary.partition_summaries.push_back(partition_config.profiling_summary);
             }
             else
             {
@@ -428,8 +483,8 @@ private:
                 auto partition_child = [this, sub_r_table_swap, sub_r_hash_table_swap, radix_width, sub_bucket, max_elements, max_radix_steps, device_config, gpu]() { 
                     partition_r_recursive(sub_r_table_swap, sub_r_hash_table_swap, radix_width, sub_bucket, max_elements, max_radix_steps, device_config, gpu); 
                 };
-                //partition_child();
-                partition_threads.push_back(std::thread(partition_child));
+                partition_child();
+                //partition_threads.push_back(std::thread(partition_child));
             }
 
             for(auto &partition_thread : partition_threads) {
@@ -452,7 +507,12 @@ private:
             bucket_config->sub_buckets = new BucketConfig[bucket_config->buckets];
             if (gpu)
             {
-                partition_gpu(bucket_config->table, bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, device_config->get_next_stream());
+                int stream_index = device_config->get_next_queue_index();
+                PartitionConfig partition_config = device_config->stream_partition_configurations[stream_index];
+                partition_config.set_radix_width(radix_width);
+                partition_gpu(bucket_config->table, bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, index_data, partition_config);
+
+                join_summary.partition_summaries.push_back(partition_config.profiling_summary);
             }
             else
             {
@@ -487,8 +547,8 @@ private:
                 auto partition_child = [this, sub_s_table_swap, sub_s_hash_table_swap, radix_width, sub_bucket, r_sub_bucket, max_radix_steps, device_config, bucket_pairs, gpu](){ 
                     partition_s_recursive(sub_s_table_swap, sub_s_hash_table_swap, radix_width, sub_bucket, r_sub_bucket, max_radix_steps, device_config, bucket_pairs, gpu); 
                 };
-                //partition_child();
-                partition_threads.push_back(std::thread(partition_child));
+                partition_child();
+                //partition_threads.push_back(std::thread(partition_child));
             }
             for(auto &partition_thread : partition_threads) {
                 partition_thread.join();
@@ -512,62 +572,57 @@ private:
         {
             BucketConfig *r_config = bucket_pairs[bucket_pair_index].first;
             BucketConfig *s_config = bucket_pairs[bucket_pair_index].second;
-#if DEBUG_PRINT
-            std::cout << "Probe " << (bucket_pair_index + 1) << "/" << bucket_pairs.size() << std::endl;          
-            print_mem();
-            std::cout << "Join " << r_config->hash_table.size << ":" << s_config->hash_table.size << std::endl;
-#endif
+
             if (r_config->hash_table.size && s_config->hash_table.size)
             {
                 // offset for table key
                 int key_offset = (radix_width * r_config->bucket_depth);
 
-                ProbeConfig probe_config = join_config.probe_config;
+                int queue_index = device_config->get_next_queue_index();
+                ProbeConfig *probe_config = &device_config->stream_probe_configurations[queue_index];
+
                 index_t total_r_elements = r_config->table.size;
                 index_t r_offset = 0;
                 while (total_r_elements > 0)
                 {
                     db_table joined_rs_table;
-                    index_t elements_step = min((index_t)probe_config.max_r_elements, total_r_elements-r_offset);
-                    build_and_probe_gpu(db_table(r_offset, elements_step, r_config->table), db_hash_table(r_offset, elements_step, r_config->hash_table), s_config->table, s_config->hash_table, joined_rs_table, key_offset, device_config->get_next_stream(), join_config.probe_config);
+                    index_t elements_step = min((index_t)(*probe_config).max_r_elements, total_r_elements-r_offset);
+                    build_and_probe_gpu(db_table(r_offset, elements_step, r_config->table), db_hash_table(r_offset, elements_step, r_config->hash_table), s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
                     total_r_elements -= elements_step;
                     r_offset += elements_step;
-#if DEBUG_PRINT
-                    std::cout << " M=" << joined_rs_table.size << std::endl;
-#endif
                     joined_rs_tables.push_back(joined_rs_table);
+                
+                    if((*probe_config).profiling_enabled) {
+                        join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
+                    }
                 }
-
-
-                    
-
-
-                //cudaStreamSynchronize(device_config.stream);
-                //gpuErrchk(cudaGetLastError());
             }
         }
     }
 
     void hash_table(db_table table, db_hash_table &hash_table, DeviceConfig *device_config, HashConfig hash_config)
     {
-        hash_table.size = table.size;
-        hash_table.gpu = table.gpu;
-
         // create indices
         // copy hashes to gpu if required
         if (table.gpu)
         {
-            cudaStream_t stream = device_config->get_next_stream();
-            cudaMallocAsync(&hash_table.indices, hash_table.size * sizeof(index_t), stream);
-            cudaMallocAsync(&hash_table.hashes, hash_table.size * sizeof(hash_t), stream);
+            int queue_index = device_config->get_next_queue_index();
+            hash_config.stream = device_config->streams[queue_index];
+
+            if(device_config->profile_enabled) {
+                auto profile_events = device_config->get_profiling_events(queue_index);
+                hash_config.enable_profile(profile_events.first, profile_events.second);
+            }
 
             int element_size = table.column_count * sizeof(column_t);
-            hash_func(table.size, sizeof(column_t) / sizeof(chunk_t), element_size / sizeof(chunk_t), (chunk_t*)table.column_values, hash_table.hashes, hash_config, stream);
+            hash_func(table.size, sizeof(column_t) / sizeof(chunk_t), element_size / sizeof(chunk_t), (chunk_t*)table.column_values, hash_table.hashes, hash_config);
+        
+            if(device_config->profile_enabled) {
+                join_summary.hash_summaries.push_back(hash_config.profile_summary);
+            }
         }
         else
         {
-            hash_table.hashes = new hash_t[hash_table.size];
-            hash_table.indices = new index_t[hash_table.size];
             for (index_t hash_index = 0; hash_index < hash_table.size; hash_index++)
             {
                 hash_t hash_value = 0;
@@ -580,7 +635,7 @@ private:
         }
     }
 
-    void merge_joined_tables(std::vector<db_table> partial_rs_tables, db_table &joined_rs_table, DeviceConfig *device_config)
+    void merge_joined_tables(std::vector<db_table> &partial_rs_tables, db_table &joined_rs_table, DeviceConfig *device_config)
     {
         index_t merged_size = 0;
         std::for_each(std::begin(partial_rs_tables), std::end(partial_rs_tables), [&merged_size](const db_table &table)
@@ -601,9 +656,11 @@ private:
             {
                 for (int column_index = 0; column_index < joined_rs_table.column_count; column_index++)
                 {
-                    cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->get_next_stream());
+                    int stream_index = device_config->get_next_queue_index();
+                    cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
                 }
                 merge_offset += table_it->size * table_it->column_count;
+                table_it->free(device_config->streams[device_config->get_next_queue_index()]);
             }
         }
     }

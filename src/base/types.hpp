@@ -72,6 +72,7 @@ struct db_hash_table {
                 delete[] indices;
             }
         }
+        size = 0;
         hashes = nullptr;
         indices = nullptr;
     }
@@ -155,14 +156,20 @@ struct db_table {
     }
 
     void free() {
+        free(0);
+    }
+
+    void free(cudaStream_t stream) {
         if(size > 0) {
             if(data_owner) {
                 if(gpu) {
-                    gpuErrchk(cudaFree(column_values));
+                    gpuErrchk(cudaFreeAsync(column_values, stream));
                 } else {
                     delete[] column_values;
                 }
             }
+            column_count = 0;
+            size = 0;
             column_values = nullptr;
         }
     }

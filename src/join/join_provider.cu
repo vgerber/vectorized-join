@@ -16,6 +16,106 @@
 
 #include "base/types.hpp"
 
+struct PartitionSummary {
+
+    index_t elements = 0;
+    float k_histrogram_elements_p_second = 0.0;
+    float k_histrogram_gb_p_second = 0.0;
+    float k_swap_elements_p_second = 0.0;
+    float k_swap_gb_p_second = 0.0;
+};
+
+struct ProbeSummary {
+    index_t r_elements = 0;
+    index_t s_elements = 0;
+    index_t rs_elements = 0;
+    float k_build_probe_tuples_p_second = 0.0;
+    float k_build_probe_gb_p_second = 0.0;
+    float k_extract_tuples_p_second = 0.0;
+    float k_extract_gb_p_second = 0.0;
+};
+
+struct PartitionConfig {
+    int histogram_threads = 256;
+    int histogram_n_elements_p_thread = 1;
+
+    int swap_threads = 256;
+    int swap_n_elements_p_thread = 1;
+
+    int radix_width = 0;
+    int bins = 0;
+    index_t *d_histogram = nullptr; 
+    index_t *d_offsets = nullptr;
+    index_t *d_dest_indices = nullptr;
+
+    bool profiling_enabled = false;
+    PartitionSummary profiling_summary;
+    cudaEvent_t profiling_start, profiling_end;
+
+    cudaStream_t stream = 0;
+
+    void enable_profiling(cudaEvent_t profiling_start, cudaEvent_t profiling_end) {
+        profiling_enabled = true;
+        this->profiling_start = profiling_start;
+        this->profiling_end = profiling_end;
+    }
+
+    void disable_profiling() {
+        profiling_enabled = false;
+    }
+
+    void set_radix_width(int radix_width) {
+        this->radix_width = radix_width;
+        int new_bins = 1 << radix_width;
+        if(new_bins != bins) {
+            free();
+            bins = new_bins;
+            gpuErrchk(cudaMallocAsync(&d_histogram, bins * sizeof(index_t), stream));
+            gpuErrchk(cudaMallocAsync(&d_offsets, bins * sizeof(index_t), stream));
+            gpuErrchk(cudaMallocAsync(&d_dest_indices, bins * sizeof(index_t), stream));
+        }
+    }
+
+    void start_profiling() {
+        if(profiling_enabled) {
+            cudaEventRecord(profiling_start, stream);
+        }
+    }
+
+    void stop_profiling() {
+        if(profiling_enabled) {
+            cudaEventRecord(profiling_end, stream);
+        }
+    }
+
+    float get_elapsed_time_s() {
+        if(profiling_enabled) {        
+            float runtime_ms = 0.0;
+            cudaEventSynchronize(profiling_end);
+            cudaEventElapsedTime(&runtime_ms, profiling_start, profiling_end);
+            return runtime_ms / pow(10, 3);
+        }
+        return 0.0f;
+    }
+
+    void free() {
+        if(d_dest_indices) {
+            gpuErrchk(cudaFreeAsync(d_dest_indices, stream));
+        }
+        if(d_histogram) {
+            gpuErrchk(cudaFreeAsync(d_histogram, stream));
+        }
+        if(d_offsets) {
+            gpuErrchk(cudaFreeAsync(d_offsets, stream));
+        }
+
+        d_dest_indices = nullptr;
+        d_histogram = nullptr;
+        d_offsets = nullptr;
+        bins = 0;
+    }
+};
+
 struct ProbeConfig
 {
     float build_table_load = 0.75;
@@ -31,6 +131,12 @@ struct ProbeConfig
     index_s_t probe_buffer_size = 0;
     index_s_t *d_probe_buffer = nullptr;
     index_s_t *d_probe_result_size = nullptr;
+
+    bool profiling_enabled = false;
+    ProbeSummary profiling_summary;
+    cudaEvent_t profiling_start, profiling_end;
+
+    cudaStream_t stream = 0;
 
     void print()
     {
@@ -52,14 +158,23 @@ struct ProbeConfig
         return build_table_load * elements;
     }
 
+    void enable_profiling(cudaEvent_t profiling_start, cudaEvent_t profiling_end) {
+        profiling_enabled = true;
+        this->profiling_start = profiling_start;
+        this->profiling_end = profiling_end;
+    }
 
+    void disable_profiling() {
+        profiling_enabled = false;
+    }
 
-    void free(cudaStream_t stream)
+    void free()
     {
         gpuErrchk(cudaFreeAsync(d_probe_buffer, stream));
         gpuErrchk(cudaFreeAsync(d_probe_result_size, stream));
         d_probe_buffer = nullptr;
-        d_probe_result_size = nullptr;
+        d_probe_result_size = nullptr;       
+        disable_profiling();
     }
 };
 
@@ -429,86 +544,65 @@ __global__ void extract_probe_results_kernel(db_table r_table, db_table s_table,
 #endif
 }
 
-void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_table_swap, db_hash_table d_hash_table_swap, int radix_width, int radix_shift, int bins, index_t *histogram, index_t *offsets, bool index_data, cudaStream_t stream)
+void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_table_swap, db_hash_table d_hash_table_swap, int radix_shift, index_t *histogram, index_t *offsets, bool index_data, PartitionConfig &partition_config)
 {
     assert(d_hash_table.size == d_hash_table_swap.size);
 
-    hash_t radix_mask = get_radix_mask(bins);
+    hash_t radix_mask = get_radix_mask(partition_config.bins);
+    int bins = partition_config.bins;
+    cudaStream_t stream = partition_config.stream;
 
-    index_t *d_histogram = nullptr;
+    index_t *d_histogram = partition_config.d_histogram;
 
-#if BENCHMARK_PART
-    cudaEvent_t hist_start, hist_end, swap_start, swap_end;
-    cudaEventCreate(&hist_start);
-    cudaEventCreate(&hist_end);
-    cudaEventCreate(&swap_start);
-    cudaEventCreate(&swap_end);
-#endif
-
-    //gpuErrchk(cudaStreamSynchronize(stream));
-    //size_t free_mem, total_mem;
-    //cudaMemGetInfo(&free_mem, &total_mem);
-    //std::cout << "Mem Free=" << free_mem / std::pow(10, 9) << "GiB Mem Total=" << total_mem / std::pow(10, 9) << "GiB " << std::endl;
-    gpuErrchk(cudaStreamSynchronize(stream));
-    gpuErrchk(cudaGetLastError());
-    gpuErrchk(cudaMallocAsync(&d_histogram, bins * sizeof(index_t), stream));
     gpuErrchk(cudaMemsetAsync(d_histogram, 0, bins * sizeof(index_t), stream));
-    gpuErrchk(cudaStreamSynchronize(stream));
-    gpuErrchk(cudaGetLastError());
-#if BENCHMARK_PART
-    cudaEventRecord(hist_start, stream);
-#endif
-    histogram_kernel<<<max(1ULL, d_hash_table.size / 256), 256, 0, stream>>>(d_hash_table.size, d_hash_table.hashes, bins, d_histogram, radix_shift, radix_mask);
-#if BENCHMARK_PART
-    cudaEventRecord(hist_end, stream);
-#endif
+
+
+
+    int histogram_threads = partition_config.histogram_threads;
+    int histrogram_blocks = max(1ULL, d_hash_table.size / histogram_threads / partition_config.histogram_n_elements_p_thread);
+    
+    partition_config.start_profiling();
+    histogram_kernel<<<histrogram_blocks, histogram_threads, 0, stream>>>(d_hash_table.size, d_hash_table.hashes, bins, d_histogram, radix_shift, radix_mask);
+    partition_config.stop_profiling();
+    if(partition_config.profiling_enabled) {
+        float runtime_s = partition_config.get_elapsed_time_s();
+        partition_config.profiling_summary.k_histrogram_elements_p_second = d_hash_table.size / runtime_s;
+        partition_config.profiling_summary.k_histrogram_gb_p_second = d_hash_table.size * sizeof(hash_t) / runtime_s / pow(10, 9); 
+    }
+
     gpuErrchk(cudaMemcpyAsync(histogram, d_histogram, bins * sizeof(index_t), cudaMemcpyDeviceToHost, stream));
-    gpuErrchk(cudaStreamSynchronize(stream));
-    gpuErrchk(cudaGetLastError());
 
     // calculate offsets
-    index_t *d_dest_indices = nullptr;
-    index_t *d_offsets = nullptr;
+    index_t *d_dest_indices = partition_config.d_dest_indices;
+    index_t *d_offsets = partition_config.d_offsets;
     memset(offsets, 0, bins * sizeof(int));
-    gpuErrchk(cudaMallocAsync(&d_dest_indices, bins * sizeof(index_t), stream));
-    gpuErrchk(cudaMemsetAsync(d_dest_indices, 0, bins * sizeof(index_t), stream));
-    gpuErrchk(cudaMallocAsync(&d_offsets, bins * sizeof(index_t), stream));
+    
+    cudaStreamSynchronize(partition_config.stream);
+    gpuErrchk(cudaMemsetAsync(d_dest_indices, 0, bins * sizeof(index_t), partition_config.stream));
     index_t offset = 0;
-    cudaStreamSynchronize(stream);
     for (int bin_index = 0; bin_index < bins; bin_index++)
     {
         offsets[bin_index] = offset;
         offset += histogram[bin_index];
     }
-    gpuErrchk(cudaMemcpyAsync(d_offsets, offsets, bins * sizeof(index_t), cudaMemcpyHostToDevice, stream));
-    gpuErrchk(cudaStreamSynchronize(stream));
+    gpuErrchk(cudaMemcpyAsync(d_offsets, offsets, bins * sizeof(index_t), cudaMemcpyHostToDevice, partition_config.stream));
+
+
     // swap elments according to bin key
-#if BENCHMARK_PART
-    cudaEventRecord(swap_start, stream);
-#endif
-    int threads = 128;
-    int blocks = ceil(d_table.size / (float)threads);
-    element_swap_kernel<<<blocks, threads, 0, stream>>>(d_table, d_hash_table, d_table_swap, d_hash_table_swap, d_offsets, d_dest_indices, radix_shift, radix_mask, index_data);
-#if BENCHMARK_PART
-    cudaEventRecord(swap_end, stream);
-#endif
-    gpuErrchk(cudaFreeAsync(d_histogram, stream));
-    gpuErrchk(cudaFreeAsync(d_offsets, stream));
-    gpuErrchk(cudaFreeAsync(d_dest_indices, stream));
-    gpuErrchk(cudaStreamSynchronize(stream));
+    int swap_threads = partition_config.swap_threads;
+    int swap_blocks = max(1ULL, d_table.size / swap_threads / partition_config.swap_n_elements_p_thread);
+    partition_config.start_profiling();
+    element_swap_kernel<<<swap_blocks, swap_threads, 0, partition_config.stream>>>(d_table, d_hash_table, d_table_swap, d_hash_table_swap, d_offsets, d_dest_indices, radix_shift, radix_mask, index_data);
+    partition_config.stop_profiling();
+    if(partition_config.profiling_enabled) {
+        float runtime_s = partition_config.get_elapsed_time_s();
+        partition_config.profiling_summary.k_swap_elements_p_second = d_table.size / runtime_s;
+        int swap_element_size = (sizeof(hash_t) + sizeof(index_t) + d_table.column_count * sizeof(column_t));
+        partition_config.profiling_summary.k_swap_gb_p_second = d_table.size * swap_element_size / runtime_s / pow(10, 9);
+        partition_config.profiling_summary.elements = d_hash_table.size;
+    }    
 
-#if BENCHMARK_PART
-    float hist_runtime = 0.0f;
-    float swap_runtime = 0.0f;
-    cudaEventElapsedTime(&hist_runtime, hist_start, hist_end);
-    cudaEventElapsedTime(&swap_runtime, swap_start, swap_end);
-    std::cout << "S C=" << d_table.size << " Hist=" << hist_runtime << " Swap=" << swap_runtime << std::endl;
-
-    cudaEventDestroy(hist_start);
-    cudaEventDestroy(hist_end);
-    cudaEventDestroy(swap_start);
-    cudaEventDestroy(swap_end);
-#endif
+    gpuErrchk(cudaStreamSynchronize(partition_config.stream));
 }
 
 struct is_greater_zero
@@ -519,7 +613,7 @@ struct is_greater_zero
     }
 };
 
-void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_table d_s_table, db_hash_table d_s_hash_table, db_table &d_joined_rs_table, int key_offset, cudaStream_t stream, ProbeConfig &config)
+void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_table d_s_table, db_hash_table d_s_hash_table, db_table &d_joined_rs_table, int key_offset, ProbeConfig &config)
 {
     // MAX-Q / Quadro / Turing 7.5
     // 32 Shared Banks
@@ -548,16 +642,20 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     if (config.max_probe_buffer_size < config.probe_buffer_size)
     {
         if(config.d_probe_buffer) {
-            gpuErrchk(cudaFreeAsync(config.d_probe_buffer, stream));
+            gpuErrchk(cudaFreeAsync(config.d_probe_buffer, config.stream));
         }
-        gpuErrchk(cudaMallocAsync(&config.d_probe_buffer, config.probe_buffer_size * sizeof(index_s_t), stream));
+        gpuErrchk(cudaMallocAsync(&config.d_probe_buffer, config.probe_buffer_size * sizeof(index_s_t), config.stream));
         config.max_probe_buffer_size = config.probe_buffer_size;
     }
 
     if(!config.d_probe_result_size) {
-        gpuErrchk(cudaMallocAsync(&config.d_probe_result_size, sizeof(index_s_t), stream));
+        gpuErrchk(cudaMallocAsync(&config.d_probe_result_size, sizeof(index_s_t), config.stream));
     }
-    gpuErrchk(cudaMemsetAsync(config.d_probe_result_size, 0, sizeof(index_s_t), stream));
+    gpuErrchk(cudaMemsetAsync(config.d_probe_result_size, 0, sizeof(index_s_t), config.stream));
+
+    if(config.profiling_enabled) {
+        cudaEventRecord(config.profiling_start, config.stream);
+    }
 #if PROBE_MODE == 0
 
     assert(1024 % config.build_threads.x == 0);
@@ -579,8 +677,19 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
 
     assert(blocks> 0);
     assert(config.build_threads > 0);
-    build_and_partial_probe_kernel<<<blocks, config.build_threads, shared_mem, stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots);
+    build_and_partial_probe_kernel<<<blocks, config.build_threads, shared_mem, config.stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots);
 #endif
+
+    if(config.profiling_enabled) {
+        cudaEventRecord(config.profiling_end, config.stream);
+        cudaEventSynchronize(config.profiling_end);
+        float runtime_ms = 0.0;
+        cudaEventElapsedTime(&runtime_ms, config.profiling_start, config.profiling_end);
+        float runtime_s = runtime_ms / pow(10, 3);
+        config.profiling_summary.k_build_probe_tuples_p_second = (d_r_hash_table.size + d_s_hash_table.size) / runtime_s;
+        int tuple_size = sizeof(column_t) * (d_r_table.column_count-1) + sizeof(hash_t);
+        config.profiling_summary.k_build_probe_gb_p_second = (d_r_hash_table.size + d_s_hash_table.size) * tuple_size / runtime_s / pow(10, 9);
+    }
     /*
     index_s_t *d_probe_offsets_buffer = nullptr;
     gpuErrchk(cudaMallocAsync(&d_probe_offsets_buffer, d_s_hash_table.size * sizeof(index_s_t), stream));
@@ -616,31 +725,38 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     d_joined_rs_table.column_count = 2; // d_r_table.column_count + d_s_table.column_count;
     d_joined_rs_table.gpu = true;
     d_joined_rs_table.data_owner = true;
-    gpuErrchk(cudaMemcpyAsync(&d_joined_rs_table.size, config.d_probe_result_size, sizeof(index_s_t), cudaMemcpyDeviceToHost, stream));
-    gpuErrchk(cudaStreamSynchronize(stream));
+    gpuErrchk(cudaMemcpyAsync(&d_joined_rs_table.size, config.d_probe_result_size, sizeof(index_s_t), cudaMemcpyDeviceToHost, config.stream));
+    gpuErrchk(cudaStreamSynchronize(config.stream));
     gpuErrchk(cudaGetLastError());
 
     if(d_joined_rs_table.size > 0) {
-        gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), stream));
-        gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), stream));
+        gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
+        gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
 
         int extract_blocks = max(1ULL, d_joined_rs_table.size / (config.extract_n_per_thread * config.extract_threads));
         int extract_threads_per_block = config.extract_threads;
         assert(extract_blocks > 0);
         assert(extract_threads_per_block > 0);
-        copy_probe_results_kernel<<<extract_blocks, extract_threads_per_block, 0, stream>>>(d_r_table, d_s_table, config.d_probe_buffer, d_joined_rs_table);
-        //extract_probe_results_kernel<<<extract_blocks, config.extract_threads, 0, stream>>>(d_r_table, d_s_table, d_probe_results, d_probe_offsets_buffer, d_probe_sizes_buffer, d_joined_rs_table);
+        
+        if(config.profiling_enabled) {
+            cudaEventRecord(config.profiling_start, config.stream);
+        }
+        
+        copy_probe_results_kernel<<<extract_blocks, extract_threads_per_block, 0, config.stream>>>(d_r_table, d_s_table, config.d_probe_buffer, d_joined_rs_table);
+        
+        if(config.profiling_enabled) {
+            cudaEventRecord(config.profiling_end, config.stream);
+            cudaEventSynchronize(config.profiling_end);
+            float runtime_ms = 0.0;
+            cudaEventElapsedTime(&runtime_ms, config.profiling_start, config.profiling_end);
+            float runtime_s = runtime_ms / pow(10, 3);
+            config.profiling_summary.k_extract_tuples_p_second = d_joined_rs_table.size / runtime_s;
+            int tuple_size = sizeof(column_t) * d_joined_rs_table.column_count;
+            config.profiling_summary.k_extract_gb_p_second = (d_joined_rs_table.size * tuple_size) / runtime_s / pow(10, 9);
+        }
     }
-    //cudaFreeAsync(d_probe_offsets_buffer, stream);
-    //cudaFreeAsync(d_probe_result_reduced, stream);
-    /*
-    cudaEventSynchronize(events[9]);
-    for(int e_index = 0; e_index < event_count; e_index++) {
-        float ms;
-        cudaEventElapsedTime(&ms, events[e_index*2], events[e_index*2+1]);
-        cudaEventDestroy(events[e_index*2]);
-        cudaEventDestroy(events[e_index*2+1]);
-        printf("%d-%d %F\n", e_index*2, e_index*2+1, ms);
-    }
-    */
+
+    config.profiling_summary.r_elements = d_r_table.size;
+    config.profiling_summary.s_elements = d_s_table.size;
+    config.profiling_summary.rs_elements = d_joined_rs_table.size;
 }

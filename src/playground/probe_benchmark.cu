@@ -165,7 +165,8 @@ int main(int argc, char **argv)
                         auto probe_start = std::chrono::high_resolution_clock::now();
                         for (int stream_index = 0; stream_index < stream_count; stream_index++)
                         {
-                            build_and_probe_gpu(r_tables[stream_index], r_hash_tables[stream_index], s_tables[stream_index], s_hash_tables[stream_index], rs_tables[stream_index], 0, streams[stream_index], probe_config);
+                            probe_config.stream = streams[stream_index];
+                            build_and_probe_gpu(r_tables[stream_index], r_hash_tables[stream_index], s_tables[stream_index], s_hash_tables[stream_index], rs_tables[stream_index], 0, probe_config);
                         }
 
                         for (int stream_index = 0; stream_index < stream_count; stream_index++)
@@ -200,7 +201,7 @@ int main(int argc, char **argv)
                         delete[] s_hash_tables;
                     }
 
-                    probe_config.free(streams[0]);
+                    probe_config.free();
                     
                     best_result.benchmark_config = benchmark_config;
                     best_result.probe_config = probe_benchmark_config;

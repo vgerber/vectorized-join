@@ -39,6 +39,9 @@ struct BenchmarkSetup
     // verify algorithm results
     bool verify = false;
     
+    // profile algorithm
+    bool profile = false;
+    
     // results
     std::string output_file_path;
     
@@ -135,6 +138,7 @@ struct BenchmarkConfig {
     short int max_streams_p_gpu;
     hash_t element_max;
     bool verify;
+    bool profile;
 
     static std::string to_string_header() {
         std::ostringstream string_stream;
@@ -227,6 +231,7 @@ std::vector<BenchmarkConfig> get_benchmark_configs(BenchmarkSetup setup) {
             config.max_streams_p_gpu = setup.max_streams;
             config.runs = setup.runs;
             config.verify = setup.verify;
+            config.profile = setup.profile;
             configs.push_back(config);
         }
     }
@@ -451,6 +456,18 @@ bool load_launch_benchmark_setup(toml::value config_file, std::string profile, B
     if (config_file.at(profile).contains(field))
     {
         setup->verify = toml::find<bool>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "profile";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->profile = toml::find<bool>(config_file, profile, field);
     }
     else
     {

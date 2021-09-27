@@ -286,7 +286,7 @@ int main(int argc, char* argv[]) {
                 hash_config.threads_per_block = hash_benchmark_config.thread_size;
 
                 cudaEventRecord(hash_start);
-                hash_func(element_buffer_size, 0, element_chunks, d_element_buffer, d_hashed_buffer, hash_config, 0);
+                hash_func(element_buffer_size, 0, element_chunks, d_element_buffer, d_hashed_buffer, hash_config);
                 cudaEventRecord(hash_end);
 
                 gpuErrchk(cudaDeviceSynchronize());

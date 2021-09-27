@@ -3,10 +3,44 @@
 
 typedef uint1 chunk_t;
 
+struct HashSummary {
+    std::string algorithm = "fnv";
+    index_t elements = 0;
+    int element_bytes = 0;
+    int element_offset = 0;
+    float k_tuples_p_seconds = 0.0;
+    float k_gb_p_seconds = 0.0;
+
+    void reset() {
+        algorithm = "fnv";
+        elements = 0;
+        element_offset = 0;
+        element_bytes = 0;
+        k_tuples_p_seconds = 0.0;
+        k_gb_p_seconds = 0.0;
+    }
+};
+
 struct HashConfig {
     int threads_per_block = 256;
     int elements_per_thread = 1;
     std::string algorithm = "fnv";
+
+    cudaStream_t stream = 0;
+
+    bool profile_enabled = false;
+    cudaEvent_t profile_start, profile_end;
+    HashSummary profile_summary;
+
+    void enable_profile(cudaEvent_t profile_start, cudaEvent_t profile_end) {
+        this->profile_start = profile_start;
+        this->profile_end = profile_end;
+        profile_enabled = true;
+    }
+
+    void disbale_profile() {
+        profile_enabled = false;
+    }
 };
 
 __host__ __device__
@@ -367,33 +401,52 @@ void hash_custom_add_shift(index_t element_buffer_size, short int chunk_offset, 
     }
 }
 
-void hash_func(index_t element_buffer_size, short int chunk_offset, short int element_chunks, chunk_t* element_buffer, hash_t * hashed_buffer,  HashConfig hash_config, cudaStream_t stream) {
+void hash_func(index_t element_buffer_size, short int chunk_offset, short int element_chunks, chunk_t* element_buffer, hash_t * hashed_buffer,  HashConfig &hash_config) {
     int threads = hash_config.threads_per_block;
     int blocks = max((element_buffer_size / hash_config.elements_per_thread) / threads, (index_t)1);
 
+    if(hash_config.profile_enabled) {
+        cudaEventRecord(hash_config.profile_start, hash_config.stream);
+    }
+
     if(hash_config.algorithm == "fnv") {
-        hash_fnv<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_fnv<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_xor") {
-        hash_custom_xor<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_xor<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_xor_shift") {
-        hash_custom_xor_shift<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_xor_shift<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_mult_xor_shift") {
-        hash_custom_mult_xor_shift<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_mult_xor_shift<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_n_mult_xor_shift") {
-        hash_custom_n_mult_xor_shift<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, 2, element_buffer, hashed_buffer);
+        hash_custom_n_mult_xor_shift<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, 2, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_xor_shift_offset") {
-        hash_custom_xor_shift_offset<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_xor_shift_offset<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_mult_xor_shift_offset") {
-        hash_custom_mult_xor_shift_offset<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_mult_xor_shift_offset<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_n_mult_xor_shift_offset") {
-        hash_custom_n_mult_xor_shift_offset<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, 2, element_buffer, hashed_buffer);
+        hash_custom_n_mult_xor_shift_offset<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, 2, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_mult") {
-        hash_custom_mult<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_mult<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_mult_shift") {
-        hash_custom_mult_shift<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_mult_shift<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_add") {
-        hash_custom_add<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_add<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
     } else if(hash_config.algorithm == "custom_add_shift") {
-        hash_custom_add_shift<<<blocks, threads, 0, stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+        hash_custom_add_shift<<<blocks, threads, 0, hash_config.stream>>>(element_buffer_size, chunk_offset, element_chunks, element_buffer, hashed_buffer);
+    }
+
+    if(hash_config.profile_enabled) {
+        cudaEventRecord(hash_config.profile_end, hash_config.stream);
+        float runtime_ms = 0.0;
+        cudaEventSynchronize(hash_config.profile_end);
+        cudaEventElapsedTime(&runtime_ms, hash_config.profile_start, hash_config.profile_end);
+        float runtime_s = runtime_ms / pow(10, 3);
+        hash_config.profile_summary.k_tuples_p_seconds = element_buffer_size / runtime_s;
+        int element_size = (element_chunks-chunk_offset) * sizeof(chunk_t);
+        hash_config.profile_summary.k_gb_p_seconds = element_size * element_buffer_size / runtime_s / pow(10, 9);
+        hash_config.profile_summary.algorithm = hash_config.algorithm;
+        hash_config.profile_summary.elements = element_buffer_size;
+        hash_config.profile_summary.element_bytes = element_chunks * sizeof(chunk_t);
+        hash_config.profile_summary.element_offset = chunk_offset * sizeof(chunk_t);
     }
 }
