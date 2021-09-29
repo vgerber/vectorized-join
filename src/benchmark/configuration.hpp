@@ -25,6 +25,8 @@ struct ProbeBenchmarkSetup {
 struct JoinBenchmarkSetup {
     std::vector<float> rs_scales;
     std::vector<int> rs_join_columns;
+    std::vector<int> vector_bytes_sizes;
+    bool vectorize = false;
 };
 
 struct BenchmarkSetup
@@ -62,6 +64,8 @@ struct JoinBenchmarkConfig
 {
     int rs_columns = 0;
     float rs_scale = 1.0;
+    bool vectorize = false;
+    int vector_bytes_size = 0;
 
     static std::string to_string_header() {
         std::ostringstream string_stream;
@@ -244,10 +248,14 @@ std::vector<JoinBenchmarkConfig> get_join_configs(BenchmarkSetup setup) {
     if(setup.has_join_setup) {
         for(auto rs_scale : setup.join_setup.rs_scales) {
             for(auto rs_columns : setup.join_setup.rs_join_columns) {
-                JoinBenchmarkConfig config;
-                config.rs_columns = rs_columns;
-                config.rs_scale = rs_scale;
-                configs.push_back(config);
+                for(auto vector_bytes_size : setup.join_setup.vector_bytes_sizes) {
+                    JoinBenchmarkConfig config;
+                    config.vectorize = setup.join_setup.vectorize;
+                    config.vector_bytes_size = (config.vectorize ? vector_bytes_size : 0);
+                    config.rs_columns = rs_columns;
+                    config.rs_scale = rs_scale;
+                    configs.push_back(config);
+                }
             }
         }
     }
@@ -385,6 +393,35 @@ bool load_join_benchmark_setup(toml::value config_file, std::string profile, Ben
         std::cout << profile << "." << field << " not found" << std::endl;
         return false;
     }
+
+    field = "vectorize";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->join_setup.vectorize = toml::find<bool>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    if(setup->join_setup.vectorize) {
+        field = "vector_bytes_sizes";
+        std::cout << "Read " << field << std::endl;
+        if (config_file.at(profile).contains(field))
+        {
+            setup->join_setup.vector_bytes_sizes = toml::find<std::vector<int>>(config_file, profile, field);
+        }
+        else
+        {
+            std::cout << profile << "." << field << " not found" << std::endl;
+            return false;
+        }
+    } else {
+        setup->join_setup.vector_bytes_sizes = { 0 };
+    }
+
     return true;
 }
 

@@ -73,8 +73,7 @@ void generate_demo_data_kernel(index_t element_buffer_size, short int element_si
     int stride = gridDim.x * blockDim.x;
 
     for(index_t element_index = index; element_index < element_buffer_size; element_index += stride) {
-        index_t buffer_index = element_index * element_chunks * sizeof(chunk_t);
-        chunk_t * chunked_element_buffer = reinterpret_cast<chunk_t*>(&element_buffer[buffer_index]);
+        index_t buffer_index = element_index * element_chunks;
         for(short int chunk_index = 0; chunk_index < element_chunks; chunk_index++) {
             chunk_t data_chunk;
             data_chunk.x = element_index;
@@ -83,7 +82,7 @@ void generate_demo_data_kernel(index_t element_buffer_size, short int element_si
             data_chunk.z = element_index;
             data_chunk.w = element_index;
             */
-            chunked_element_buffer[chunk_index] = data_chunk;
+            element_buffer[buffer_index + chunk_index] = data_chunk;
         }
     }
 }
@@ -92,11 +91,10 @@ __global__
 void generate_demo_data_kernel(index_t element_buffer_size, short int element_size, short int element_chunks, chunk_t* element_buffer, float * distribution_values) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
-    
-    uint32_t* element_buffer32 = reinterpret_cast<uint32_t*>(element_buffer);
-    index_t total_elements = element_buffer_size * element_chunks * (sizeof(chunk_t) / sizeof(uint32_t));
+
+    index_t total_elements = element_buffer_size * element_chunks;
     for(index_t element_index = index; element_index < total_elements; element_index += stride) {
-        element_buffer32[element_index] = fabsf(distribution_values[element_index]) * UINT32_MAX;
+        element_buffer[element_index].x = fabsf(distribution_values[element_index]) * UINT32_MAX;
     }
 }
 
@@ -194,7 +192,7 @@ void calculate_distribution(index_t elements, hash_t * hash_buffer, hash_t & has
 
 void generate_demo_data(index_t elements, short int element_size, short int *element_chunks, chunk_t** buffer) {
     *element_chunks = element_size / sizeof(chunk_t) + (element_size % sizeof(chunk_t) > 0);
-    cudaMalloc(buffer, elements * *element_chunks * sizeof(chunk_t));
+    gpuErrchk(cudaMalloc(buffer, elements * *element_chunks * sizeof(chunk_t)));
 
 #define USE_CURAND 0
 
@@ -275,7 +273,9 @@ int main(int argc, char* argv[]) {
                 generate_demo_data(element_buffer_size, element_size, &element_chunks, &d_element_buffer);
                 //std::cout << d_hashed_buffer << " " << d_element_buffer;
 
+                print_mem();
                 
+                gpuErrchk(cudaDeviceSynchronize());
                 gpuErrchk(cudaGetLastError());
                 cudaEvent_t hash_start, hash_end;
                 cudaEventCreate(&hash_start);
@@ -284,10 +284,9 @@ int main(int argc, char* argv[]) {
                 HashConfig hash_config;
                 hash_config.algorithm = hash_benchmark_config.algorithm;
                 hash_config.threads_per_block = hash_benchmark_config.thread_size;
+                hash_config.enable_profile(hash_start, hash_end);
 
-                cudaEventRecord(hash_start);
                 hash_func(element_buffer_size, 0, element_chunks, d_element_buffer, d_hashed_buffer, hash_config);
-                cudaEventRecord(hash_end);
 
                 gpuErrchk(cudaDeviceSynchronize());
 

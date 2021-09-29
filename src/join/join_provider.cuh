@@ -123,6 +123,8 @@ struct JoinConfig {
     int tasks_p_device = 1;
     int devices = 1;
     bool profile_enabled = true;
+    bool vectorize = false;
+    int vector_bytes_size = 0;
 
     HashConfig hash_config;
     PartitionConfig partition_config;
@@ -211,12 +213,7 @@ public:
         }
     }
 
-    void join_cpu(db_table r_table, db_table s_table, db_table &joined_rs_table) {
-        joined_rs_table.gpu = false;
-        joined_rs_table.size = 0;
-        joined_rs_table.data_owner = true;
-        joined_rs_table.column_count = 2; // (r_table.column_count + s_table.column_count);
-        int rs_half_column_count = joined_rs_table.column_count / 2;
+    void join_cpu(db_table r_table, db_table s_table, db_table &joined_rs_table) {        
 
         // matching
         // allocate matching intermed buffer
@@ -227,12 +224,12 @@ public:
         for(index_t s_index = 0; s_index < s_table.size; s_index++) {
             for(index_t r_index = 0; r_index < r_table.size; r_index++) {
                 int match_counter = 0;
-                for(int column_index = 1; column_index < r_table.column_count; column_index++) {
+                for(int column_index = 0; column_index < r_table.column_count; column_index++) {
                     column_t r_value = r_table.column_values[r_index * r_table.column_count + column_index];
                     column_t s_value = s_table.column_values[s_index * s_table.column_count + column_index];
                     match_counter += (r_value == s_value);
                 }
-                bool matching_result = match_counter == (r_table.column_count-1);
+                bool matching_result = match_counter == r_table.column_count;
                 matching_results[s_index * r_table.size + r_index] = matching_result;
                 matched_tuples += matching_result;
             }
@@ -240,8 +237,8 @@ public:
 
         // join
         // allocated rs table based on matching results
-        joined_rs_table.size = matched_tuples;
-        joined_rs_table.column_values = new column_t[matched_tuples * joined_rs_table.column_count];
+        joined_rs_table = db_table(2, matched_tuples, false);
+        int rs_half_column_count = joined_rs_table.column_count / 2;
         
         // build rs table from matching results
         index_t rs_index = 0;
@@ -272,7 +269,7 @@ public:
         std::cout << "Join " << std::endl;
 #endif
 
-        int buckets = 8;
+        int buckets = 2;
         int radix_width = std::ceil(std::log2(buckets));
         int bins = (1 << radix_width);
 
@@ -355,7 +352,7 @@ public:
         join_summary.partition_tuples_p_second = ((r_table.size + s_table.size) / partition_druation.count());
         join_summary.probe_tuples_p_second = ((r_table.size + s_table.size) / probe_druation.count());
         join_summary.merge_tuples_p_second = ((r_table.size + s_table.size) / merge_druation.count());
-        join_summary.join_tuples_p_second = ((r_table.size * s_table.size) / join_druation.count());
+        join_summary.join_tuples_p_second = ((r_table.size + s_table.size) / join_druation.count());
         join_summary.join_gb_p_second = (r_table.size + s_table.size) * r_table.column_count * sizeof(column_t) / pow(10, 9) / join_druation.count();
         join_summary.rs_elements = joined_rs_table.size;
         join_summary.r_elements = r_table.size;
@@ -435,21 +432,16 @@ private:
             
             int radix_shift = (radix_width * bucket_config->bucket_depth);
             int buckets = bucket_config->buckets;
-            bool index_data = bucket_config->bucket_depth == 0;
 
             bucket_config->histogram = new index_t[buckets];
             bucket_config->offsets = new index_t[buckets];
-            bucket_config->sub_buckets = new BucketConfig[bucket_config->buckets];
-
-
+            
             if (gpu)
             {
-                //std::cout << "P " << bucket_config << " -> " << bucket_config->table.size << ":" << r_table_swap.size << std::endl;
-                
                 int stream_index = device_config->get_next_queue_index();
                 PartitionConfig partition_config = device_config->stream_partition_configurations[stream_index];
                 partition_config.set_radix_width(radix_width);
-                partition_gpu(bucket_config->table, bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, index_data, partition_config);
+                partition_gpu(bucket_config->table, bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, partition_config);
             
                 join_summary.partition_summaries.push_back(partition_config.profiling_summary);
             }
@@ -457,6 +449,10 @@ private:
             {
                 //partition(bucket_config->data, r_swap_entry, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, gpu);
             }
+
+
+
+            bucket_config->sub_buckets = new BucketConfig[bucket_config->buckets];
 
             std::vector<std::thread> partition_threads;
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++)
@@ -500,7 +496,6 @@ private:
         {
             int radix_shift = (radix_width * bucket_config->bucket_depth);
             int buckets = bucket_config->buckets;
-            bool index_data = bucket_config->bucket_depth == 0;
 
             bucket_config->histogram = new index_t[buckets];
             bucket_config->offsets = new index_t[buckets];
@@ -510,7 +505,7 @@ private:
                 int stream_index = device_config->get_next_queue_index();
                 PartitionConfig partition_config = device_config->stream_partition_configurations[stream_index];
                 partition_config.set_radix_width(radix_width);
-                partition_gpu(bucket_config->table, bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, index_data, partition_config);
+                partition_gpu(bucket_config->table, bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, partition_config);
 
                 join_summary.partition_summaries.push_back(partition_config.profiling_summary);
             }
@@ -553,14 +548,73 @@ private:
             for(auto &partition_thread : partition_threads) {
                 partition_thread.join();
             }
-
-            
         }
         // add leaf bucket to bucket pair list
         else if (bucket_config->hash_table.size > 0 && !r_config->sub_buckets && r_config->hash_table.size > 0)
         {
             std::lock_guard<std::mutex> lock(partition_lock);
-            bucket_pairs->push_back(std::make_pair(r_config, bucket_config));
+            add_and_vectorize_bucket(r_config, bucket_config, bucket_pairs);            
+        }
+    }
+
+    void add_and_vectorize_bucket(BucketConfig *r_bucket, BucketConfig *s_bucket, std::vector<bucket_pair_t> *vectorized_buckets) {
+        if(join_config.vectorize) {
+            
+            int r_size = r_bucket->table.get_bytes() + r_bucket->hash_table.get_bytes();
+            int s_vector_size_limitation = join_config.vector_bytes_size - min(join_config.probe_config.max_r_elements, r_size);
+
+
+            int s_size = s_bucket->table.get_bytes() + s_bucket->hash_table.get_bytes();
+            if(s_size < s_vector_size_limitation) {
+                vectorized_buckets->push_back(std::make_pair(r_bucket, s_bucket));
+            } else {
+                
+
+                int s_sub_buckets_size = max(1, (int)ceil(s_vector_size_limitation/s_size));
+                int r_sub_buckets_size = max(1, (int)ceil((r_size)/join_config.probe_config.max_r_elements));
+                int r_sub_size = r_size / r_sub_buckets_size;
+                int r_sub_decrement = r_sub_size;
+                int s_sub_size = s_size / s_sub_buckets_size;
+                int s_sub_decrement = s_sub_size;
+
+                BucketConfig * r_sub_buckets = new BucketConfig[s_sub_buckets_size * r_sub_buckets_size];
+                BucketConfig * s_sub_buckets = new BucketConfig[s_sub_buckets_size * r_sub_buckets_size];
+                for(int r_sub_bucket_index = 0; r_sub_bucket_index < r_sub_buckets_size; r_sub_bucket_index++) {
+                    int r_offset = r_sub_decrement * r_sub_bucket_index;
+                    
+                    for(int s_sub_bucket_index = 0; s_sub_bucket_index < s_sub_buckets_size; s_sub_bucket_index++) {
+                        int s_offset = s_sub_decrement * s_sub_bucket_index;
+                        auto r_sub_bucket = &r_sub_buckets[r_sub_bucket_index * r_sub_buckets_size + s_sub_bucket_index];
+                        auto s_sub_bucket = &s_sub_buckets[r_sub_bucket_index * r_sub_buckets_size + s_sub_bucket_index];
+                        r_sub_bucket->bucket_depth = r_bucket->bucket_depth;
+                        r_sub_bucket->buckets = 0;
+                        r_sub_bucket->sub_buckets = nullptr;
+                        s_sub_bucket->bucket_depth = s_bucket->bucket_depth;
+                        s_sub_bucket->buckets = 0;
+                        s_sub_bucket->sub_buckets = nullptr;
+
+                        if(r_sub_bucket_index < s_sub_buckets_size-1) {
+                            r_sub_bucket->table = db_table(r_offset, r_sub_size, r_bucket->table);
+                            r_sub_bucket->hash_table = db_hash_table(r_offset, r_sub_size, r_bucket->hash_table);
+                        } else {
+                            r_sub_bucket->table = db_table(r_offset, r_bucket->table.size - r_offset, r_bucket->table);
+                            r_sub_bucket->hash_table = db_hash_table(r_offset, r_bucket->table.size - r_offset, r_bucket->hash_table);
+                        }
+                        
+                        
+                        if(s_sub_bucket_index < s_sub_buckets_size-1) {
+                            s_sub_bucket->table = db_table(s_offset, s_sub_size, s_bucket->table);
+                            s_sub_bucket->hash_table = db_hash_table(s_offset, s_sub_size, s_bucket->hash_table);
+                        } else {
+                            s_sub_bucket->table = db_table(s_offset, s_bucket->table.size - s_offset, s_bucket->table);
+                            s_sub_bucket->hash_table = db_hash_table(s_offset, s_bucket->table.size - s_offset, s_bucket->hash_table);
+                        }
+                        vectorized_buckets->push_back(std::make_pair(r_sub_bucket, s_sub_bucket));
+                    }
+                }
+            }
+        } else {
+            vectorized_buckets->push_back(std::make_pair(r_bucket, s_bucket));
         }
     }
 
@@ -615,7 +669,7 @@ private:
             }
 
             int element_size = table.column_count * sizeof(column_t);
-            hash_func(table.size, sizeof(column_t) / sizeof(chunk_t), element_size / sizeof(chunk_t), (chunk_t*)table.column_values, hash_table.hashes, hash_config);
+            hash_func(table.size, 0, element_size / sizeof(chunk_t), (chunk_t*)table.column_values, hash_table.hashes, hash_config);
         
             if(device_config->profile_enabled) {
                 join_summary.hash_summaries.push_back(hash_config.profile_summary);
@@ -626,7 +680,7 @@ private:
             for (index_t hash_index = 0; hash_index < hash_table.size; hash_index++)
             {
                 hash_t hash_value = 0;
-                for (size_t column_index = 1; column_index < table.column_count; column_index++)
+                for (size_t column_index = 0; column_index < table.column_count; column_index++)
                 {
                     hash_value += table.column_values[hash_index * table.column_count + column_index];
                 }
@@ -651,15 +705,17 @@ private:
         if (joined_rs_table.gpu)
         {
             cudaMalloc(&joined_rs_table.column_values, joined_rs_table.column_count * joined_rs_table.size * sizeof(column_t));
+            cudaMalloc(&joined_rs_table.primary_keys, joined_rs_table.size * sizeof(column_t));
 
             for (auto table_it = partial_rs_tables.begin(); table_it != partial_rs_tables.end(); table_it++)
             {
                 for (int column_index = 0; column_index < joined_rs_table.column_count; column_index++)
                 {
                     int stream_index = device_config->get_next_queue_index();
-                    cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
+                    cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset * 2], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
+                    cudaMemcpyAsync(&joined_rs_table.primary_keys[merge_offset], table_it->primary_keys, table_it->size * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
                 }
-                merge_offset += table_it->size * table_it->column_count;
+                merge_offset += table_it->size;
                 table_it->free(device_config->streams[device_config->get_next_queue_index()]);
             }
         }

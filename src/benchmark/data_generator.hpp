@@ -17,15 +17,16 @@ void generate_random_numbers(size_t size, V max_int, V *buffer) {
 
 void generate_table(index_t table_size, int column_count, column_t max_int, db_table &table_data, bool gpu=true) {
     // +1 = primary key column
-    table_data.column_count = column_count+1;
+    table_data.column_count = column_count;
     table_data.gpu = gpu;
     table_data.column_values = new column_t[table_data.column_count * table_size];
+    table_data.primary_keys = new column_t[table_size];
     table_data.size = table_size;
     table_data.data_owner = true;
 
     for(int table_index = 0; table_index < table_size; table_index++) {
-        table_data.column_values[table_index * table_data.column_count] = table_index+1;
-        generate_random_numbers(table_data.column_count-1, max_int, &table_data.column_values[table_index * table_data.column_count + 1]);
+        table_data.primary_keys[table_index] = table_index+1;
+        generate_random_numbers(table_data.column_count, max_int, &table_data.column_values[table_index * table_data.column_count]);
     }
 
     if(gpu) {
@@ -35,4 +36,10 @@ void generate_table(index_t table_size, int column_count, column_t max_int, db_t
         delete[] table_data.column_values;
         table_data.column_values = d_column_values;
     }    
+
+        column_t * d_primary_keys = nullptr;
+        gpuErrchk(cudaMalloc(&d_primary_keys, table_size * sizeof(column_t)));
+        gpuErrchk(cudaMemcpy(d_primary_keys, table_data.primary_keys, table_size * sizeof(column_t), cudaMemcpyHostToDevice));
+        delete[] table_data.primary_keys;
+        table_data.primary_keys = d_primary_keys;
 }

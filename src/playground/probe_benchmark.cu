@@ -67,17 +67,12 @@ void hash_table(db_table table, db_hash_table &hash_table)
     // copy hashes to gpu if required
     if (table.gpu)
     {
-        gpuErrchk(cudaMalloc(&hash_table.indices, hash_table.size * sizeof(index_t)));
         hash_t *d_hashes = nullptr;
         gpuErrchk(cudaMalloc(&d_hashes, hash_table.size * sizeof(hash_t)));
         gpuErrchk(cudaMemcpy(d_hashes, hash_table.hashes, hash_table.size * sizeof(hash_t), cudaMemcpyHostToDevice));
         delete[] hash_table.hashes;
         hash_table.hashes = d_hashes;
         delete[] column_values;
-    }
-    else
-    {
-        hash_table.indices = new index_t[hash_table.size];
     }
 }
 

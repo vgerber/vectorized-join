@@ -37,7 +37,7 @@ struct ProbeSummary {
 
 struct PartitionConfig {
     int histogram_threads = 256;
-    int histogram_n_elements_p_thread = 1;
+    int histogram_n_elements_p_thread = 4;
 
     int swap_threads = 256;
     int swap_n_elements_p_thread = 1;
@@ -187,6 +187,7 @@ __global__ void histogram_kernel(index_t buffer_size, hash_t *hash_buffer, int b
 {
     index_t index = blockIdx.x * blockDim.x + threadIdx.x;
     index_t stride = gridDim.x * blockDim.x;
+    
     for (index_t element_index = index; element_index < buffer_size; element_index += stride)
     {
         hash_t key = (hash_buffer[element_index] >> radix_shift) & radix_mask;
@@ -194,7 +195,7 @@ __global__ void histogram_kernel(index_t buffer_size, hash_t *hash_buffer, int b
     }
 }
 
-__global__ void element_swap_kernel(db_table table, db_hash_table hash_table, db_table table_swap, db_hash_table hash_table_swap, index_t *offsets, index_t *dest_indices, int radix_shift, hash_t radix_mask, bool index_data = false)
+__global__ void element_swap_kernel(db_table table, db_hash_table hash_table, db_table table_swap, db_hash_table hash_table_swap, index_t *offsets, index_t *dest_indices, int radix_shift, hash_t radix_mask)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
@@ -208,14 +209,8 @@ __global__ void element_swap_kernel(db_table table, db_hash_table hash_table, db
         index_t swap_index = offsets[key] + atomicAdd(&dest_indices[key], 1);
         hash_table_swap.hashes[swap_index] = hash_table.hashes[element_index];
         //hash_table_swap.column_values[swap_index] = hash_table.column_values[element_index];
-        if (index_data)
-        {
-            hash_table_swap.indices[swap_index] = element_index;
-        }
-        else
-        {
-            hash_table_swap.indices[swap_index] = hash_table.indices[element_index];
-        }
+
+        table_swap.primary_keys[swap_index] = table.primary_keys[element_index];
 
         index_t column_value_index = element_index * table.column_count;
         index_t column_value_swap_index = swap_index * table.column_count;
@@ -282,7 +277,7 @@ __device__ void probe_kernel(db_table r_table, db_table s_table, db_hash_table s
                 const index_t s_column_value_index = s_index * s_table.column_count;
 
                 // probe every key column but ignore the primary key column
-                for (int column_index = 1; column_index < r_table.column_count; column_index++)
+                for (int column_index = 0; column_index < r_table.column_count; column_index++)
                 {
                     column_t r_column_value = r_table.column_values[r_column_value_index + column_index];
                     column_t s_column_value = s_table.column_values[s_column_value_index + column_index];
@@ -290,7 +285,7 @@ __device__ void probe_kernel(db_table r_table, db_table s_table, db_hash_table s
                 }
 
                 // table entries do match if both table entries have the same column values
-                filter_mask probe_result = column_equal_counter == (r_table.column_count - 1);
+                filter_mask probe_result = column_equal_counter == r_table.column_count;
 
                 probe_results[probe_index] = probe_result;
                 probe_size += (index_t)probe_result;
@@ -336,7 +331,7 @@ __device__ void partial_probe_kernel(db_table r_table, db_table s_table, db_hash
                 const index_t s_column_value_index = s_index * s_table.column_count;
 
                 // probe every key column but ignore the primary key column
-                for (int column_index = 1; column_index < r_table.column_count; column_index++)
+                for (int column_index = 0; column_index < r_table.column_count; column_index++)
                 {
                     column_t r_column_value = r_table.column_values[r_column_value_index + column_index];
                     column_t s_column_value = s_table.column_values[s_column_value_index + column_index];
@@ -344,7 +339,7 @@ __device__ void partial_probe_kernel(db_table r_table, db_table s_table, db_hash
                 }
 
                 // table entries do match if both table entries have the same column values
-                if(column_equal_counter == (r_table.column_count - 1)) {
+                if(column_equal_counter == r_table.column_count) {
                     probe_results[atomicAdd(probe_results_size, 1)] = probe_index;
                 }
             }
@@ -438,7 +433,7 @@ __global__ void prefix_sum_kernel(index_s_t buffer_size, index_s_t *input_buffer
 
 __global__ void copy_probe_results_kernel(db_table r_table, db_table s_table, index_s_t *indices, db_table rs_table)
 {
-    int rs_half_column_count = rs_table.column_count / 2;
+    //int rs_half_column_count = rs_table.column_count / 2;
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
     for (index_s_t buffer_index = index; buffer_index < rs_table.size; buffer_index += stride)
@@ -448,11 +443,20 @@ __global__ void copy_probe_results_kernel(db_table r_table, db_table s_table, in
         index_s_t r_index = copy_index % r_table.size;
 
         index_s_t rs_offset = buffer_index * rs_table.column_count;
+        rs_table.primary_keys[buffer_index] = buffer_index+1;
+
+        /*
         for (int column_index = 0; column_index < rs_half_column_count; column_index++)
         {
             rs_table.column_values[rs_offset + column_index] = r_table.column_values[r_index * r_table.column_count + column_index];
             rs_table.column_values[rs_offset + column_index + rs_half_column_count] = s_table.column_values[s_index * s_table.column_count + column_index];
         }
+        */
+       
+        rs_table.column_values[rs_offset] = r_table.primary_keys[r_index];
+        rs_table.column_values[rs_offset + 1] = s_table.primary_keys[s_index];
+       
+        
     }
 }
 
@@ -544,7 +548,7 @@ __global__ void extract_probe_results_kernel(db_table r_table, db_table s_table,
 #endif
 }
 
-void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_table_swap, db_hash_table d_hash_table_swap, int radix_shift, index_t *histogram, index_t *offsets, bool index_data, PartitionConfig &partition_config)
+void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_table_swap, db_hash_table d_hash_table_swap, int radix_shift, index_t *histogram, index_t *offsets, PartitionConfig &partition_config)
 {
     assert(d_hash_table.size == d_hash_table_swap.size);
 
@@ -592,12 +596,12 @@ void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_tabl
     int swap_threads = partition_config.swap_threads;
     int swap_blocks = max(1ULL, d_table.size / swap_threads / partition_config.swap_n_elements_p_thread);
     partition_config.start_profiling();
-    element_swap_kernel<<<swap_blocks, swap_threads, 0, partition_config.stream>>>(d_table, d_hash_table, d_table_swap, d_hash_table_swap, d_offsets, d_dest_indices, radix_shift, radix_mask, index_data);
+    element_swap_kernel<<<swap_blocks, swap_threads, 0, partition_config.stream>>>(d_table, d_hash_table, d_table_swap, d_hash_table_swap, d_offsets, d_dest_indices, radix_shift, radix_mask);
     partition_config.stop_profiling();
     if(partition_config.profiling_enabled) {
         float runtime_s = partition_config.get_elapsed_time_s();
         partition_config.profiling_summary.k_swap_elements_p_second = d_table.size / runtime_s;
-        int swap_element_size = (sizeof(hash_t) + sizeof(index_t) + d_table.column_count * sizeof(column_t));
+        int swap_element_size = (sizeof(hash_t) + d_table.column_count * sizeof(column_t));
         partition_config.profiling_summary.k_swap_gb_p_second = d_table.size * swap_element_size / runtime_s / pow(10, 9);
         partition_config.profiling_summary.elements = d_hash_table.size;
     }    
@@ -730,6 +734,7 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     gpuErrchk(cudaGetLastError());
 
     if(d_joined_rs_table.size > 0) {
+        gpuErrchk(cudaMallocAsync(&d_joined_rs_table.primary_keys, d_joined_rs_table.size * sizeof(column_t), config.stream));
         gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
         gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
 
