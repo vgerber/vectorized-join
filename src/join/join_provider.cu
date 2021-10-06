@@ -132,6 +132,13 @@ struct ProbeConfig
     index_s_t *d_probe_buffer = nullptr;
     index_s_t *d_probe_result_size = nullptr;
 
+#if PROBE_MODE == 2
+    int max_table_slots = 0;
+    int max_table_links = 0;
+    index_s_t * d_table_slots = nullptr;
+    index_s_t * d_table_links = nullptr;
+#endif
+
     bool profiling_enabled = false;
     ProbeSummary profiling_summary;
     cudaEvent_t profiling_start, profiling_end;
@@ -170,11 +177,20 @@ struct ProbeConfig
 
     void free()
     {
-        gpuErrchk(cudaFreeAsync(d_probe_buffer, stream));
-        gpuErrchk(cudaFreeAsync(d_probe_result_size, stream));
+        gpuErrchk(cudaFree(d_probe_buffer));
+        gpuErrchk(cudaFree(d_probe_result_size));
+        max_probe_buffer_size = 0;
         d_probe_buffer = nullptr;
         d_probe_result_size = nullptr;       
         disable_profiling();
+
+#if PROBE_MODE == 2
+        gpuErrchk(cudaFree(d_table_slots));
+        gpuErrchk(cudaFree(d_table_links));
+        max_table_slots = 0;
+        max_table_links = 0;
+        
+#endif
     }
 };
 
@@ -397,37 +413,69 @@ __global__ void build_and_partial_probe_kernel(db_table r_table, db_hash_table r
     __syncthreads();
 
     // probing
-    // probe values from table s on hash table with values from r
+    // probe values from table s on hash table with values from  {}
     partial_probe_kernel(r_table, s_table, s_hash_table, probe_results_size, probe_results, key_offset, slots, table_hashes, table_links, table_slots);
 }
 
-__global__ void prefix_sum_kernel(index_s_t buffer_size, index_s_t *input_buffer, index_s_t *output_buffer)
-{
-    int index = blockIdx.x * blockDim.x + threadIdx.x + 1;
+__global__ void build_global_kernel(db_table r_table, db_hash_table r_hash_table, int key_offset, int slots, index_s_t *table_links, index_s_t *table_slots) {
+
+    // build
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+    for (int r_index = index; r_index < r_hash_table.size; r_index += stride)
+    {
+        hash_t r_hash = r_hash_table.hashes[r_index];
+        hash_t r_key = r_hash >> key_offset;
+        int slot = r_key % slots;
+        table_links[r_index] = (index_s_t)atomicExch((uint *)&table_slots[slot], (uint)r_index + 1);
+    }
+}
+
+__global__ void probe_global_kernel(db_table r_table, db_hash_table r_hash_table, db_table s_table, db_hash_table s_hash_table, index_s_t *probe_results_size, index_s_t *probe_results, int key_offset, int slots, index_s_t *table_links, index_s_t *table_slots) {
+
+    // build
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
 
-    if (threadIdx.x == 0)
+    // probe values from table s on hash table with values from r
+    for (int s_index = index; s_index < s_table.size; s_index += stride)
     {
-        output_buffer[0] = 0;
-    }
+        //memset(&probe_results[r_table.size * s_index], 0, r_table.size * sizeof(filter_mask));
+        hash_t s_hash = s_hash_table.hashes[s_index];
+        hash_t s_key = s_hash >> key_offset;
+        index_s_t s_slot = s_key % slots;
 
-    for (index_s_t buffer_index = index; buffer_index < buffer_size; buffer_index += stride)
-    {
-        index_s_t lookup_index = buffer_index - 1;
-        index_s_t offset = 0;
-        while (true)
+        index_s_t table_index = table_slots[s_slot];
+        while (table_index)
         {
-            offset += input_buffer[lookup_index];
-            if (lookup_index == 0)
+            // compare hash of table r (build) and s (probe)
+            // indices in link table have an offset by one (linke value of 0 -> last node)
+            table_index--;
+            const hash_t r_hash = r_hash_table.hashes[table_index];
+
+            index_s_t probe_index = s_index * r_table.size + table_index;
+
+            if (s_hash == r_hash)
             {
-                break;
+                int column_equal_counter = 0;
+                const index_t r_column_value_index = table_index * r_table.column_count;
+                const index_t s_column_value_index = s_index * s_table.column_count;
+
+                // probe every key column but ignore the primary key column
+                for (int column_index = 0; column_index < r_table.column_count; column_index++)
+                {
+                    column_t r_column_value = r_table.column_values[r_column_value_index + column_index];
+                    column_t s_column_value = s_table.column_values[s_column_value_index + column_index];
+                    column_equal_counter += (r_column_value == s_column_value);
+                }
+
+                // table entries do match if both table entries have the same column values
+                if(column_equal_counter == r_table.column_count) {
+                    probe_results[atomicAdd(probe_results_size, 1)] = probe_index;
+                }
             }
-            else
-            {
-                lookup_index--;
-            }
+            table_index = table_links[table_index];
         }
-        output_buffer[buffer_index] = offset;
     }
 }
 
@@ -458,94 +506,6 @@ __global__ void copy_probe_results_kernel(db_table r_table, db_table s_table, in
        
         
     }
-}
-
-__global__ void extract_probe_results_kernel(db_table r_table, db_table s_table, filter_mask *probe_buffer, index_s_t *probe_offsets_buffer, index_s_t *probe_sizes_buffer, db_table rs_table)
-{
-    typedef int32_t l_mask_t;
-#if EXTRACT_MODE == 0
-    int x_index = blockIdx.x * blockDim.x + threadIdx.x;
-    int x_stride = gridDim.x * blockDim.x;
-    for (index_s_t s_buffer_index = x_index; s_buffer_index < s_table.size; s_buffer_index += x_stride)
-    {
-        //printf("s %d\n", s_buffer_index);
-        index_s_t probe_size = probe_sizes_buffer[s_buffer_index];
-        index_s_t probe_offset = s_buffer_index * r_table.size;
-        l_mask_t *s_probe_buffer = (l_mask_t *)&probe_buffer[probe_offset];
-
-        //const index_s_t s_column_value_index = s_table.offset + s_buffer_index;
-        if (probe_size)
-        {
-            int elements_p_thread = sizeof(l_mask_t);
-            int probe_element_index = blockIdx.y * blockDim.y + threadIdx.y;
-            int probe_index = probe_element_index * elements_p_thread;
-            int probe_element_stride = gridDim.y * blockDim.y;
-            int probe_stride = probe_element_stride * elements_p_thread;
-            for (; probe_index < r_table.size; probe_index += probe_stride)
-            {
-                l_mask_t l_mask = s_probe_buffer[probe_element_index];
-                probe_element_index += probe_element_stride;
-                if (l_mask > 0)
-                {
-                    for (int mask_index = 0; mask_index < elements_p_thread; mask_index++)
-                    {
-                        l_mask = l_mask >> mask_index * sizeof(filter_mask);
-                        filter_mask mask = l_mask & 0x0001;
-                        if (mask)
-                        {
-                            index_s_t pair_offset = atomicAdd(&probe_offsets_buffer[s_buffer_index], 1);
-
-                            for (int column_index = 0; column_index < r_table.column_count; column_index++)
-                            {
-                                rs_table.column_values[pair_offset * rs_table.column_count + column_index] = r_table.column_values[(probe_index + mask_index) * r_table.column_count + column_index];
-                                rs_table.column_values[pair_offset * rs_table.column_count + column_index + r_table.column_count] = s_table.column_values[s_buffer_index * s_table.column_count + column_index];
-                            }
-                        }
-                    }
-                    // column 0 = r primary keys
-                    // column 1 = s primary keys
-                    //printf("s %d p %d\n", s_buffer_index, probe_index);
-                }
-            }
-        }
-    }
-#elif EXTRACT_MODE == 1
-
-    extern __shared__ index_s_t *extract_buffer[];
-    int x_index = blockIdx.x * blockDim.x + threadIdx.x;
-    int x_stride = gridDim.x * blockDim.x;
-    for (index_s_t s_buffer_index = x_index; s_buffer_index < s_table.size; s_buffer_index += x_stride)
-    {
-        //printf("s %d\n", s_buffer_index);
-        index_s_t probe_size = probe_sizes_buffer[s_buffer_index];
-        index_s_t probe_offset = s_buffer_index * r_table.size;
-
-        //const index_s_t s_column_value_index = s_table.offset + s_buffer_index;
-        if (probe_size)
-        {
-            int probe_index = blockIdx.y * blockDim.y + threadIdx.y;
-            int probe_stride = gridDim.y * blockDim.y;
-            for (; probe_index < r_table.size; probe_index += probe_stride)
-            {
-                if (probe_buffer[probe_offset + probe_index])
-                {
-
-                    // column 0 = r primary keys
-                    // column 1 = s primary keys
-                    //printf("s %d p %d\n", s_buffer_index, probe_index);
-
-                    index_s_t pair_offset = atomicAdd(&probe_offsets_buffer[s_buffer_index], 1);
-
-                    for (int column_index = 0; column_index < r_table.column_count; column_index++)
-                    {
-                        rs_table.column_values[pair_offset * rs_table.column_count + column_index] = r_table.column_values[probe_index * r_table.column_count + column_index];
-                        rs_table.column_values[pair_offset * rs_table.column_count + column_index + r_table.column_count] = s_table.column_values[s_buffer_index * s_table.column_count + column_index];
-                    }
-                }
-            }
-        }
-    }
-#endif
 }
 
 void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_table_swap, db_hash_table d_hash_table_swap, int radix_shift, index_t *histogram, index_t *offsets, PartitionConfig &partition_config)
@@ -642,7 +602,10 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     */
     // allocate probe buffer
     // keep old buffer or extend to bigger buffer
+    index_s_t slots = config.get_table_slots(d_r_hash_table.size);
     config.probe_buffer_size = d_r_hash_table.size * d_s_hash_table.size;
+    
+    // adjust reserved buffers
     if (config.max_probe_buffer_size < config.probe_buffer_size)
     {
         if(config.d_probe_buffer) {
@@ -657,16 +620,33 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     }
     gpuErrchk(cudaMemsetAsync(config.d_probe_result_size, 0, sizeof(index_s_t), config.stream));
 
+#if PROBE_MODE == 2
+    if(slots > config.max_table_slots) {
+        config.max_table_slots = slots;
+        if(config.d_table_slots) {
+            gpuErrchk(cudaFreeAsync(config.d_table_slots, config.stream));
+        }
+        gpuErrchk(cudaMallocAsync(&config.d_table_slots, slots * sizeof(index_s_t), config.stream));
+    }
+
+    if(d_r_hash_table.size > config.max_table_links) {
+        config.max_table_links = d_r_hash_table.size;
+        if(config.d_table_links) {
+            gpuErrchk(cudaFreeAsync(config.d_table_links, config.stream));
+        }
+        gpuErrchk(cudaMallocAsync(&config.d_table_links, d_r_hash_table.size * sizeof(index_s_t), config.stream));
+    }
+#endif
+
     if(config.profiling_enabled) {
         cudaEventRecord(config.profiling_start, config.stream);
     }
 #if PROBE_MODE == 0
-
     assert(1024 % config.build_threads.x == 0);
     int blocks_per_memory = 1024 / config.build_threads.x;
     int block_elements = config.build_threads.x * elements_per_thread;
     int blocks = ceil(d_r_table.size / (float)block_elements);
-    int slots = config.build_table_load * block_elements;
+    slots = config.build_table_load * block_elements;
 
     int max_block_elements = std::max((index_t)block_elements, (d_r_table.size - (blocks - 1) * block_elements));
 
@@ -674,7 +654,6 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     assert(shared_mem * blocks_per_memory <= 64000);
     partial_build_and_probe_kernel<<<blocks, config.build_threads, shared_mem, stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, d_probe_sizes_buffer, d_probe_results, key_offset, slots, blocks_per_memory, block_elements);
 #elif PROBE_MODE == 1
-    index_s_t slots = config.get_table_slots(d_r_hash_table.size);
     int blocks = ceil(d_s_hash_table.size / (float)(config.build_threads * config.build_n_per_thread));
     int shared_mem = config.get_table_size(d_r_hash_table.size, slots);
     //assert(shared_mem <= 49000);
@@ -682,6 +661,20 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     assert(blocks> 0);
     assert(config.build_threads > 0);
     build_and_partial_probe_kernel<<<blocks, config.build_threads, shared_mem, config.stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots);
+#elif PROBE_MODE == 2
+    gpuErrchk(cudaMemsetAsync(config.d_table_slots, 0, sizeof(index_s_t) * config.max_table_slots, config.stream));
+
+    int build_blocks = ceil(d_r_hash_table.size / (float)(config.build_threads * config.build_n_per_thread));
+    int probe_blocks = ceil(d_s_hash_table.size / (float)(config.build_threads * config.build_n_per_thread));
+    
+    //assert(shared_mem <= 49000);
+
+    
+    assert(build_blocks > 0);
+    assert(probe_blocks > 0);
+    assert(config.build_threads > 0);
+    build_global_kernel<<<build_blocks, config.build_threads, 0, config.stream>>>(d_r_table, d_r_hash_table, key_offset, slots, config.d_table_links, config.d_table_slots);   
+    probe_global_kernel<<<probe_blocks, config.build_threads, 0, config.stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots, config.d_table_links, config.d_table_slots);
 #endif
 
     if(config.profiling_enabled) {
@@ -691,40 +684,9 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
         cudaEventElapsedTime(&runtime_ms, config.profiling_start, config.profiling_end);
         float runtime_s = runtime_ms / pow(10, 3);
         config.profiling_summary.k_build_probe_tuples_p_second = (d_r_hash_table.size + d_s_hash_table.size) / runtime_s;
-        int tuple_size = sizeof(column_t) * (d_r_table.column_count-1) + sizeof(hash_t);
+        int tuple_size = sizeof(column_t) * (d_r_table.column_count) + sizeof(hash_t);
         config.profiling_summary.k_build_probe_gb_p_second = (d_r_hash_table.size + d_s_hash_table.size) * tuple_size / runtime_s / pow(10, 9);
     }
-    /*
-    index_s_t *d_probe_offsets_buffer = nullptr;
-    gpuErrchk(cudaMallocAsync(&d_probe_offsets_buffer, d_s_hash_table.size * sizeof(index_s_t), stream));
-
-    thrust::device_ptr<index_s_t> td_probe_sizes(d_probe_sizes_buffer);
-    thrust::device_ptr<index_s_t> td_probe_offsets(d_probe_offsets_buffer);  
-    thrust::exclusive_scan(thrust::cuda::par.on(stream), td_probe_sizes, td_probe_sizes + d_s_table.size, td_probe_offsets);
-
-    index_s_t result_last_offset = 0;
-    index_s_t result_last_size = 0;
-    gpuErrchk(cudaMemcpyAsync(&result_last_offset, &d_probe_offsets_buffer[d_s_hash_table.size - 1], sizeof(index_s_t), cudaMemcpyDeviceToHost, stream));
-    cudaMemcpyAsync(&result_last_size, &d_probe_sizes_buffer[d_s_hash_table.size - 1], sizeof(index_s_t), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
-    d_joined_rs_table.size = result_last_offset + result_last_size;
-    //std::cout << d_joined_rs_table.size << std::endl;
-    // 2 = r + s primary key columns
-    d_joined_rs_table.column_count = 2; // * d_r_table.column_count;
-    //std::cout << d_joined_rs_table.column_values << std::endl;
-    //std::cout << d_joined_rs_table.size << std::endl;
-    */
-
-    /*
-    thrust::device_ptr<index_s_t> td_probe_results(d_probe_results);
-    d_joined_rs_table.column_count = 2; // * d_r_table.column_count;
-    d_joined_rs_table.size = thrust::count_if(thrust::cuda::par.on(stream), td_probe_results, td_probe_results + (d_s_hash_table.size * d_r_table.size), is_greater_zero());    
-    
-    index_s_t * d_probe_result_reduced = nullptr;
-    cudaMallocAsync(&d_probe_result_reduced, d_joined_rs_table.size * sizeof(index_s_t), stream);
-    thrust::device_ptr<index_s_t> probe_result_reduced(d_probe_result_reduced);
-    thrust::copy_if(thrust::cuda::par.on(stream), td_probe_results, td_probe_results + (d_s_hash_table.size * d_r_hash_table.size), td_probe_results, probe_result_reduced, is_greater_zero());
-    */
 
     d_joined_rs_table.column_count = 2; // d_r_table.column_count + d_s_table.column_count;
     d_joined_rs_table.gpu = true;
@@ -736,7 +698,7 @@ void build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table, db_ta
     if(d_joined_rs_table.size > 0) {
         gpuErrchk(cudaMallocAsync(&d_joined_rs_table.primary_keys, d_joined_rs_table.size * sizeof(column_t), config.stream));
         gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
-        gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
+        //gpuErrchk(cudaMemsetAsync(d_joined_rs_table.column_values, 1, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));
 
         int extract_blocks = max(1ULL, d_joined_rs_table.size / (config.extract_n_per_thread * config.extract_threads));
         int extract_threads_per_block = config.extract_threads;

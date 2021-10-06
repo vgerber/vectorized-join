@@ -160,7 +160,7 @@ struct db_table {
         }
 
         for(index_t value_index = 0; value_index < h_table.size; value_index++) {
-            std::cout << value_index << "\t\t" << primary_keys[value_index] << "\t\t";
+            std::cout << value_index << "\t\t" << h_table.primary_keys[value_index] << "\t\t";
             for(int column_index = 0; column_index < h_table.column_count; column_index++) {
                 std::cout << h_table.column_values[value_index * column_count + column_index] << "\t\t";
             }
@@ -180,8 +180,14 @@ struct db_table {
         if(size > 0) {
             if(data_owner) {
                 if(gpu) {
-                    gpuErrchk(cudaFreeAsync(column_values, stream));
-                    gpuErrchk(cudaFreeAsync(primary_keys, stream));
+                    if(stream) {
+                        gpuErrchk(cudaFreeAsync(column_values, stream));
+                        gpuErrchk(cudaFreeAsync(primary_keys, stream));
+                    } else {
+                        gpuErrchk(cudaFree(column_values));
+                        gpuErrchk(cudaFree(primary_keys));
+                    }
+                    
                 } else {
                     delete[] column_values;
                     delete[] primary_keys;

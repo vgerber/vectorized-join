@@ -5,10 +5,11 @@ find_package(toml11 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 set(build_filter OFF)
-set(build_join OFF)
-set(build_probe OFF)
+set(build_join ON)
+set(build_probe ON)
 set(build_hash ON)
 
 if(${build_filter})
@@ -42,6 +43,7 @@ target_include_directories(join PRIVATE
     ${TOML11_INCLUDE_DIR}
     src/
 )
+target_link_libraries(join PRIVATE curand)
 endif()
 
 if(${build_probe})
@@ -60,6 +62,8 @@ target_include_directories(probe PRIVATE
     ${TOML11_INCLUDE_DIR}
     src/
 )
+
+target_link_libraries(probe PRIVATE curand)
 endif()
 
 if(${build_hash})
@@ -78,5 +82,5 @@ target_include_directories(hash PRIVATE
     src/
 )
 
-target_link_libraries(hash PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(hash PRIVATE curand)
 endif()

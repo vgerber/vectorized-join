@@ -1,5 +1,5 @@
 #include "join/join_provider.cuh"
-#include "benchmark/data_generator.hpp"
+#include "benchmark/data_generator.cu"
 #include "benchmark/configuration.hpp"
 
 #include "json.hpp"
@@ -201,8 +201,6 @@ int main(int argc, char **argv)
     auto probe_configs = get_probe_benchmark_configs(benchmark_setup);
     auto hash_configs = get_hash_benchmark_configs(benchmark_setup);
 
-    bool gpu = true;
-
     json profile_json;
     int config_index = 0;
     for (BenchmarkConfig benchmark_config : benchmark_configs)
@@ -240,14 +238,13 @@ int main(int argc, char **argv)
                         int column_count = join_benchmark_config.rs_columns;
                         index_t r_table_size = benchmark_config.elements;
                         index_t s_table_size = r_table_size / join_benchmark_config.rs_scale;
-                        index_t max_value = benchmark_config.element_max;
 
                         db_table r_table;
                         db_table s_table;
                         db_table rs_table;
 
-                        generate_table(r_table_size, column_count, max_value, r_table, gpu);
-                        generate_table(s_table_size, column_count, max_value, s_table, gpu);
+                        generate_table(r_table_size, column_count, r_table);
+                        generate_table(s_table_size, column_count, s_table);
 
                         //r_table.print();
                         //s_table.print();

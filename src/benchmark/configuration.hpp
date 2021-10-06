@@ -33,7 +33,6 @@ struct BenchmarkSetup
 {
     // launch
     std::vector<int> gpus;
-    index_t element_max = 1000;
     std::vector<long long> elements;
     int runs = 0;
     short int max_streams = 1;
@@ -140,7 +139,6 @@ struct BenchmarkConfig {
     long long elements;
     int runs;
     short int max_streams_p_gpu;
-    hash_t element_max;
     bool verify;
     bool profile;
 
@@ -230,7 +228,6 @@ std::vector<BenchmarkConfig> get_benchmark_configs(BenchmarkSetup setup) {
         for(auto elements : setup.elements) {
             BenchmarkConfig config;
             config.gpus = gpus;
-            config.element_max = setup.element_max;
             config.elements = elements;
             config.max_streams_p_gpu = setup.max_streams;
             config.runs = setup.runs;
@@ -248,12 +245,17 @@ std::vector<JoinBenchmarkConfig> get_join_configs(BenchmarkSetup setup) {
     if(setup.has_join_setup) {
         for(auto rs_scale : setup.join_setup.rs_scales) {
             for(auto rs_columns : setup.join_setup.rs_join_columns) {
-                for(auto vector_bytes_size : setup.join_setup.vector_bytes_sizes) {
-                    JoinBenchmarkConfig config;
-                    config.vectorize = setup.join_setup.vectorize;
-                    config.vector_bytes_size = (config.vectorize ? vector_bytes_size : 0);
-                    config.rs_columns = rs_columns;
-                    config.rs_scale = rs_scale;
+                JoinBenchmarkConfig config;
+                config.vectorize = setup.join_setup.vectorize;
+                config.rs_columns = rs_columns;
+                config.rs_scale = rs_scale;
+                if(setup.join_setup.vectorize) {
+                    for(auto vector_bytes_size : setup.join_setup.vector_bytes_sizes) {
+                        config.vector_bytes_size = vector_bytes_size;
+                        configs.push_back(config);
+                    }
+                } else {
+                    config.vector_bytes_size = 0;
                     configs.push_back(config);
                 }
             }
@@ -418,8 +420,6 @@ bool load_join_benchmark_setup(toml::value config_file, std::string profile, Ben
             std::cout << profile << "." << field << " not found" << std::endl;
             return false;
         }
-    } else {
-        setup->join_setup.vector_bytes_sizes = { 0 };
     }
 
     return true;
@@ -469,18 +469,6 @@ bool load_launch_benchmark_setup(toml::value config_file, std::string profile, B
     if (config_file.at(profile).contains(field))
     {
         setup->elements = toml::find<std::vector<long long>>(config_file, profile, field);
-    }
-    else
-    {
-        std::cout << profile << "." << field << " not found" << std::endl;
-        return false;
-    }
-
-    field = "element_max";
-    std::cout << "Read " << field << std::endl;
-    if (config_file.at(profile).contains(field))
-    {
-        setup->element_max = toml::find<index_t>(config_file, profile, field);
     }
     else
     {

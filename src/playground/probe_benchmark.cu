@@ -1,6 +1,11 @@
 #include "join/join_provider.cuh"
-#include "benchmark/data_generator.hpp"
+#include "hash/hash.cu"
+#include "benchmark/data_generator.cu"
 #include "benchmark/configuration.hpp"
+#include "json.hpp"
+
+using json = nlohmann::json;
+
 
 struct ProbeBenchmarkResult
 {
@@ -35,45 +40,16 @@ struct ProbeBenchmarkResult
     }
 };
 
-void hash_table(db_table table, db_hash_table &hash_table)
-{
-    hash_table.size = table.size;
-    hash_table.gpu = table.gpu;
-    hash_table.hashes = new hash_t[hash_table.size];
-
-    column_t *column_values = nullptr;
-    if (table.gpu)
-    {
-        column_values = new column_t[table.size * table.column_count];
-        gpuErrchk(cudaMemcpy(column_values, table.column_values, table.column_count * table.size * sizeof(column_t), cudaMemcpyDeviceToHost));
-    }
-    else
-    {
-        column_values = table.column_values;
-    }
-
-    // create hash
-    for (index_t hash_index = 0; hash_index < hash_table.size; hash_index++)
-    {
-        hash_t hash_value = 0;
-        for (size_t column_index = 1; column_index < table.column_count; column_index++)
-        {
-            hash_value += column_values[hash_index * table.column_count + column_index];
-        }
-        hash_table.hashes[hash_index] = hash_value;
-    }
-
-    // create indices
-    // copy hashes to gpu if required
-    if (table.gpu)
-    {
-        hash_t *d_hashes = nullptr;
-        gpuErrchk(cudaMalloc(&d_hashes, hash_table.size * sizeof(hash_t)));
-        gpuErrchk(cudaMemcpy(d_hashes, hash_table.hashes, hash_table.size * sizeof(hash_t), cudaMemcpyHostToDevice));
-        delete[] hash_table.hashes;
-        hash_table.hashes = d_hashes;
-        delete[] column_values;
-    }
+void store_probe_summary(json &parent_json, ProbeSummary probe_summary) {
+    json probe_summary_json;
+    probe_summary_json["k_build_probe_tuples_p_second"] = probe_summary.k_build_probe_tuples_p_second;
+    probe_summary_json["k_build_probe_gb_p_second"] = probe_summary.k_build_probe_gb_p_second;
+    probe_summary_json["k_extract_tuples_p_second"] = probe_summary.k_extract_tuples_p_second;
+    probe_summary_json["k_extract_gb_p_second"] = probe_summary.k_extract_gb_p_second;
+    probe_summary_json["r_elements"] = probe_summary.r_elements;
+    probe_summary_json["s_elements"] = probe_summary.s_elements;
+    probe_summary_json["rs_elements"] = probe_summary.rs_elements;
+    parent_json.push_back(probe_summary_json);
 }
 
 int main(int argc, char **argv)
@@ -85,7 +61,7 @@ int main(int argc, char **argv)
     if (!load_benchmark_setup(std::string(argv[1]), std::string(argv[2]), &benchmark_setup))
     {
         std::cout << "Failed to load config" << std::endl;
-        return -1;
+        //return -1;
     }
 
     std::fstream run_csv_stream;
@@ -95,8 +71,6 @@ int main(int argc, char **argv)
     cudaDeviceProp device_properties;
     cudaGetDeviceProperties(&device_properties, 0);
     std::cout << device_properties.asyncEngineCount << "," << device_properties.concurrentKernels << "," << device_properties.multiProcessorCount << std::endl;
-
-    bool gpu = true;
 
     // fix to 1 for probe config preallocated data
     int stream_count = 1; //benchmark_setup.max_streams;
@@ -111,6 +85,16 @@ int main(int argc, char **argv)
     std::vector<JoinBenchmarkConfig> join_configs = get_join_configs(benchmark_setup);
     ProbeBenchmarkResult best_result;
 
+    HashConfig hash_config;
+    hash_config.algorithm = "fnv";
+    hash_config.profile_enabled = false;
+
+    cudaEvent_t profiling_start, profiling_end;
+    cudaEventCreate(&profiling_start);
+    cudaEventCreate(&profiling_end);
+
+    json probe_json;
+
     int config_index = 0;
     for (auto benchmark_config : benchmark_configs)
     {
@@ -121,6 +105,7 @@ int main(int argc, char **argv)
                 int column_count = join_benchmark_config.rs_columns;
                 index_t s_table_size = benchmark_config.elements;
                 index_t r_table_size = benchmark_config.elements / join_benchmark_config.rs_scale;
+                
                 
 
                 //config.print();
@@ -134,10 +119,14 @@ int main(int argc, char **argv)
                 probe_config.build_threads = probe_benchmark_config.build_threads;
                 probe_config.extract_threads = probe_benchmark_config.extract_threads;
                 probe_config.extract_n_per_thread = probe_benchmark_config.extract_n_per_thread;
+                if(benchmark_config.profile) {
+                    probe_config.enable_profiling(profiling_start, profiling_end);
+                }
+                
 #if PROBE_MODE == 1
                 if(probe_config.get_table_size(r_table_size) < device_properties.sharedMemPerBlock)
-#endif
                 {
+#endif
                     double tuples_p_second_avg = 0.0;
                     for (int run_index = 0; run_index < benchmark_setup.runs; run_index++)
                     {
@@ -150,11 +139,14 @@ int main(int argc, char **argv)
 
                         for (int stream_index = 0; stream_index < stream_count; stream_index++)
                         {
-                            generate_table(r_table_size, column_count, benchmark_config.element_max, r_tables[stream_index], gpu);
-                            generate_table(s_table_size, column_count, benchmark_setup.element_max, s_tables[stream_index], gpu);
+                            generate_table(r_table_size, column_count, r_tables[stream_index]);
+                            generate_table(s_table_size, column_count, s_tables[stream_index]);
 
-                            hash_table(r_tables[stream_index], r_hash_tables[stream_index]);
-                            hash_table(s_tables[stream_index], s_hash_tables[stream_index]);
+                            hash_config.stream = streams[stream_index];
+                            r_hash_tables[stream_index] = db_hash_table(r_tables[stream_index].size, r_tables[stream_index].gpu);
+                            s_hash_tables[stream_index] = db_hash_table(s_tables[stream_index].size, s_tables[stream_index].gpu);
+                            hash_func(r_tables[stream_index].size, 0, sizeof(column_t)/sizeof(chunk_t)*r_tables[stream_index].column_count, (chunk_t*)r_tables[stream_index].column_values, r_hash_tables[stream_index].hashes, hash_config);
+                            hash_func(s_tables[stream_index].size, 0, sizeof(column_t)/sizeof(chunk_t)*s_tables[stream_index].column_count, (chunk_t*)s_tables[stream_index].column_values, s_hash_tables[stream_index].hashes, hash_config);
                         }
 
                         auto probe_start = std::chrono::high_resolution_clock::now();
@@ -162,6 +154,7 @@ int main(int argc, char **argv)
                         {
                             probe_config.stream = streams[stream_index];
                             build_and_probe_gpu(r_tables[stream_index], r_hash_tables[stream_index], s_tables[stream_index], s_hash_tables[stream_index], rs_tables[stream_index], 0, probe_config);
+                            store_probe_summary(probe_json, probe_config.profiling_summary);
                         }
 
                         for (int stream_index = 0; stream_index < stream_count; stream_index++)
@@ -208,10 +201,10 @@ int main(int argc, char **argv)
                     
 
                     run_csv_stream << best_result.to_string() << std::endl;
-                }
 #if PROBE_MODE == 1
-            }
+                }
 #endif
+            }
         }
     }
 
@@ -219,6 +212,14 @@ int main(int argc, char **argv)
     {
         cudaStreamDestroy(streams[stream_index]);
     }
+
+    cudaEventDestroy(profiling_start);
+    cudaEventDestroy(profiling_end);
+
+    std::fstream run_json_stream;
+    run_json_stream.open((benchmark_setup.output_file_path + "/run.json"), std::ios::app);
+    run_json_stream << probe_json.dump(1);
+    run_json_stream.close();
 
     //r_table.print();
     //s_table.print();

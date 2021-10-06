@@ -1,8 +1,8 @@
 #include <nlohmann/json.hpp>
 #include <vector>
-#include <curand.h>
 
 #include "hash/hash.cu"
+#include "benchmark/data_generator.cu"
 #include "benchmark/configuration.hpp"
 
 
@@ -65,38 +65,6 @@ struct HashBenchmarkResult
         //printf("Runtime %e ms %e H/s %e Gb/s\n", run_time_avg, (config.elements / run_time_avg), (element_buffer_size * element_size / run_time_avg));
     }
 };
-
-
-__global__
-void generate_demo_data_kernel(index_t element_buffer_size, short int element_size, short int element_chunks, chunk_t* element_buffer) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = gridDim.x * blockDim.x;
-
-    for(index_t element_index = index; element_index < element_buffer_size; element_index += stride) {
-        index_t buffer_index = element_index * element_chunks;
-        for(short int chunk_index = 0; chunk_index < element_chunks; chunk_index++) {
-            chunk_t data_chunk;
-            data_chunk.x = element_index;
-            /*
-            data_chunk.y = element_index;
-            data_chunk.z = element_index;
-            data_chunk.w = element_index;
-            */
-            element_buffer[buffer_index + chunk_index] = data_chunk;
-        }
-    }
-}
-
-__global__
-void generate_demo_data_kernel(index_t element_buffer_size, short int element_size, short int element_chunks, chunk_t* element_buffer, float * distribution_values) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = gridDim.x * blockDim.x;
-
-    index_t total_elements = element_buffer_size * element_chunks;
-    for(index_t element_index = index; element_index < total_elements; element_index += stride) {
-        element_buffer[element_index].x = fabsf(distribution_values[element_index]) * UINT32_MAX;
-    }
-}
 
 __global__
 void calculate_distribution_kernel(index_t element_buffer_size, hash_t * hash_buffer, hash_t max_value, hash_t * hash_max, hash_t * hash_min, index_t * hash_collisions, short int sections, unsigned long long * section_buffer, short int buckets, int * bucket_buffer) {
@@ -188,35 +156,6 @@ void calculate_distribution(index_t elements, hash_t * hash_buffer, hash_t & has
     gpuErrchk(cudaFree(d_hash_max));
     gpuErrchk(cudaFree(d_hash_min));
     gpuErrchk(cudaFree(d_hash_collision));
-}
-
-void generate_demo_data(index_t elements, short int element_size, short int *element_chunks, chunk_t** buffer) {
-    *element_chunks = element_size / sizeof(chunk_t) + (element_size % sizeof(chunk_t) > 0);
-    gpuErrchk(cudaMalloc(buffer, elements * *element_chunks * sizeof(chunk_t)));
-
-#define USE_CURAND 0
-
-#if USE_CURAND
-    float * d_distribution = nullptr;
-    index_t distribution_values_count = elements * *element_chunks * (sizeof(chunk_t) / sizeof(uint32_t));
-    gpuErrchk(cudaMalloc(&d_distribution, distribution_values_count * sizeof(float)));
-
-    curandGenerator_t rand_gen;
-    gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
-    gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, 101ULL));
-    //gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
-    //gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.01));
-    //gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.3));
-    gpuErrchk(curandDestroyGenerator(rand_gen));
-
-    generate_demo_data_kernel<<<max(elements/256, 1ULL), 256>>>(elements, element_size, *element_chunks, *buffer, d_distribution);
-    
-    gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaFree(d_distribution));
-#else    
-    
-    generate_demo_data_kernel<<<max(elements/256, 1ULL), 256>>>(elements, element_size, *element_chunks, *buffer);
-#endif
 }
 
 int main(int argc, char* argv[]) {
