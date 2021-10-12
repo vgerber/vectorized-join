@@ -1,0 +1,20 @@
+[test]
+
+threads_per_block = [128, 256, 1024]
+elements_per_thread = [1, 2, 4, 8, 32, 64, 128, 256, 512, 1024]
+#elements = [10_0000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 10_000_000, 50_000_000, 100_000_000, 250_000_000]
+elements = [50_000_000, 100_000_000, 250_000_000]
+bins = [2, 4, 8, 16, 32, 64, 128, 256]
+
+runs = 5
+output = "benchmark/run/local/hist/test_blocks"
+
+[profile]
+
+threads_per_block = [128, 256]
+elements_per_thread = [1, 2, 4]
+elements = [50_000_000, 100_000_000, 250_000_000]
+bins = [2, 4, 8, 16, 32, 64, 128, 256]
+
+runs = 1
+output = "benchmark/run/local/hist/profile"

@@ -11,6 +11,7 @@ set(build_filter OFF)
 set(build_join ON)
 set(build_probe ON)
 set(build_hash ON)
+set(build_hist ON)
 
 if(${build_filter})
 add_executable(filter 
@@ -83,4 +84,23 @@ target_include_directories(hash PRIVATE
 )
 
 target_link_libraries(hash PRIVATE curand)
+endif()
+
+if(${build_hist})
+add_executable(histogram
+    src/playground/histogram_benchmark.cu
+)
+
+set_property(TARGET histogram PROPERTY CUDA_ARCHITECTURES 75)
+
+target_compile_options(histogram PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+    -Xcompiler -rdynamic -lineinfo
+>) 
+
+target_include_directories(histogram PRIVATE
+    ${TOML11_INCLUDE_DIR}
+    src/
+)
+
+target_link_libraries(histogram PRIVATE curand)
 endif()

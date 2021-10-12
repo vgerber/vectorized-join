@@ -243,8 +243,8 @@ int main(int argc, char **argv)
                         db_table s_table;
                         db_table rs_table;
 
-                        generate_table(r_table_size, column_count, r_table);
-                        generate_table(s_table_size, column_count, s_table);
+                        generate_table(r_table_size, column_count, r_table, benchmark_config.max_value, benchmark_config.skew);
+                        generate_table(s_table_size, column_count, s_table, benchmark_config.max_value, benchmark_config.skew);
 
                         //r_table.print();
                         //s_table.print();

@@ -100,14 +100,33 @@ int main(int argc, char **argv)
     {
         for (auto join_benchmark_config : join_configs)
         {
+            int column_count = join_benchmark_config.rs_columns;
+            index_t s_table_size = benchmark_config.elements;
+            index_t r_table_size = benchmark_config.elements / join_benchmark_config.rs_scale;
+
+            db_table *r_tables = new db_table[stream_count];
+            db_table *s_tables = new db_table[stream_count];
+            db_table *rs_tables = new db_table[stream_count];
+
+            db_hash_table *r_hash_tables = new db_hash_table[stream_count];
+            db_hash_table *s_hash_tables = new db_hash_table[stream_count];
+
+            for (int stream_index = 0; stream_index < stream_count; stream_index++)
+            {
+                generate_table(r_table_size, column_count, r_tables[stream_index], benchmark_config.max_value, benchmark_config.skew);
+                //r_tables[stream_index].print();
+                generate_table(s_table_size, column_count, s_tables[stream_index], benchmark_config.max_value, benchmark_config.skew);
+                
+                hash_config.stream = streams[stream_index];
+                r_hash_tables[stream_index] = db_hash_table(r_tables[stream_index].size, r_tables[stream_index].gpu);
+                s_hash_tables[stream_index] = db_hash_table(s_tables[stream_index].size, s_tables[stream_index].gpu);
+                hash_func(r_tables[stream_index].size, 0, sizeof(column_t)/sizeof(chunk_t)*r_tables[stream_index].column_count, (chunk_t*)r_tables[stream_index].column_values, r_hash_tables[stream_index].hashes, hash_config);
+                hash_func(s_tables[stream_index].size, 0, sizeof(column_t)/sizeof(chunk_t)*s_tables[stream_index].column_count, (chunk_t*)s_tables[stream_index].column_values, s_hash_tables[stream_index].hashes, hash_config);
+            }
+            
+
             for (auto probe_benchmark_config : probe_configs)
             {
-                int column_count = join_benchmark_config.rs_columns;
-                index_t s_table_size = benchmark_config.elements;
-                index_t r_table_size = benchmark_config.elements / join_benchmark_config.rs_scale;
-                
-                
-
                 //config.print();
                 //print_mem();
                 config_index++;
@@ -128,27 +147,8 @@ int main(int argc, char **argv)
                 {
 #endif
                     double tuples_p_second_avg = 0.0;
-                    for (int run_index = 0; run_index < benchmark_setup.runs; run_index++)
-                    {
-                        db_table *r_tables = new db_table[stream_count];
-                        db_table *s_tables = new db_table[stream_count];
-                        db_table *rs_tables = new db_table[stream_count];
-
-                        db_hash_table *r_hash_tables = new db_hash_table[stream_count];
-                        db_hash_table *s_hash_tables = new db_hash_table[stream_count];
-
-                        for (int stream_index = 0; stream_index < stream_count; stream_index++)
-                        {
-                            generate_table(r_table_size, column_count, r_tables[stream_index]);
-                            generate_table(s_table_size, column_count, s_tables[stream_index]);
-
-                            hash_config.stream = streams[stream_index];
-                            r_hash_tables[stream_index] = db_hash_table(r_tables[stream_index].size, r_tables[stream_index].gpu);
-                            s_hash_tables[stream_index] = db_hash_table(s_tables[stream_index].size, s_tables[stream_index].gpu);
-                            hash_func(r_tables[stream_index].size, 0, sizeof(column_t)/sizeof(chunk_t)*r_tables[stream_index].column_count, (chunk_t*)r_tables[stream_index].column_values, r_hash_tables[stream_index].hashes, hash_config);
-                            hash_func(s_tables[stream_index].size, 0, sizeof(column_t)/sizeof(chunk_t)*s_tables[stream_index].column_count, (chunk_t*)s_tables[stream_index].column_values, s_hash_tables[stream_index].hashes, hash_config);
-                        }
-
+                    for (int run_index = 0; run_index < benchmark_config.runs; run_index++)
+                    {                   
                         auto probe_start = std::chrono::high_resolution_clock::now();
                         for (int stream_index = 0; stream_index < stream_count; stream_index++)
                         {
@@ -171,22 +171,10 @@ int main(int argc, char **argv)
                         
                     
                         //rs_tables[0].print();
-
                         for (int stream_index = 0; stream_index < stream_count; stream_index++)
                         {
-                            r_tables[stream_index].free();
-                            s_tables[stream_index].free();
                             rs_tables[stream_index].free();
-
-                            r_hash_tables[stream_index].free();
-                            s_hash_tables[stream_index].free();
                         }
-
-                        delete[] r_tables;
-                        delete[] s_tables;
-                        delete[] rs_tables;
-                        delete[] r_hash_tables;
-                        delete[] s_hash_tables;
                     }
 
                     probe_config.free();
@@ -195,7 +183,7 @@ int main(int argc, char **argv)
                     best_result.probe_config = probe_benchmark_config;
                     best_result.join_config = join_benchmark_config;
 
-                    tuples_p_second_avg /= benchmark_setup.runs;
+                    tuples_p_second_avg /= benchmark_config.runs;
                     best_result.tuples_p_second = tuples_p_second_avg;
                     best_result.probe_elements = r_table_size;
                     
@@ -205,6 +193,22 @@ int main(int argc, char **argv)
                 }
 #endif
             }
+
+            for (int stream_index = 0; stream_index < stream_count; stream_index++)
+            {
+                r_tables[stream_index].free();
+                s_tables[stream_index].free();
+                rs_tables[stream_index].free();
+
+                r_hash_tables[stream_index].free();
+                s_hash_tables[stream_index].free();
+            }
+
+            delete[] r_tables;
+            delete[] s_tables;
+            delete[] rs_tables;
+            delete[] r_hash_tables;
+            delete[] s_hash_tables;
         }
     }
 
@@ -215,11 +219,12 @@ int main(int argc, char **argv)
 
     cudaEventDestroy(profiling_start);
     cudaEventDestroy(profiling_end);
-
-    std::fstream run_json_stream;
-    run_json_stream.open((benchmark_setup.output_file_path + "/run.json"), std::ios::app);
-    run_json_stream << probe_json.dump(1);
-    run_json_stream.close();
+    if(benchmark_setup.profile) {
+        std::fstream run_json_stream;
+        run_json_stream.open((benchmark_setup.output_file_path + "/run.json"), std::ios::app);
+        run_json_stream << probe_json.dump(1);
+        run_json_stream.close();
+    }
 
     //r_table.print();
     //s_table.print();

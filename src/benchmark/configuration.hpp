@@ -5,6 +5,8 @@
 #include <memory>
 #include <filesystem>
 
+#include "base/types.hpp"
+
 struct HashBenchmarkSetup {
     std::vector<int> hash_thread_sizes;
     std::vector<int> hash_elements_sizes;
@@ -33,10 +35,15 @@ struct BenchmarkSetup
 {
     // launch
     std::vector<int> gpus;
-    std::vector<long long> elements;
-    int runs = 0;
-    short int max_streams = 1;
+    std::vector<int> runs;
+    std::vector<short int> max_streams;
     
+    // data gen
+    std::vector<long long> elements;
+    std::vector<int> max_values;
+    std::vector<float> skews;
+
+
     // verify algorithm results
     bool verify = false;
     
@@ -136,17 +143,23 @@ struct ProbeBenchmarkConfig {
 
 struct BenchmarkConfig {
     int gpus;
-    long long elements;
     int runs;
     short int max_streams_p_gpu;
     bool verify;
     bool profile;
+    
+    // data gen
+    long long elements;
+    int max_value;
+    float skew;
 
     static std::string to_string_header() {
         std::ostringstream string_stream;
         string_stream << "runs,"
             << "gpus,"
             << "elements,"
+            << "max_value,"
+            << "skew,"
             << "max_streams_p_gpu,"
             << "hash_bytes";
         return string_stream.str();
@@ -157,6 +170,8 @@ struct BenchmarkConfig {
         string_stream << runs << ","
             << gpus << ","
             << elements << ","
+            << max_value << ","
+            << skew << ","
             << max_streams_p_gpu << ","
             << sizeof(hash_t);
         return string_stream.str();
@@ -224,16 +239,26 @@ std::vector<ProbeBenchmarkConfig> get_probe_benchmark_configs(BenchmarkSetup set
 
 std::vector<BenchmarkConfig> get_benchmark_configs(BenchmarkSetup setup) {
     std::vector<BenchmarkConfig> configs;
-    for(auto gpus : setup.gpus) {
-        for(auto elements : setup.elements) {
-            BenchmarkConfig config;
-            config.gpus = gpus;
-            config.elements = elements;
-            config.max_streams_p_gpu = setup.max_streams;
-            config.runs = setup.runs;
-            config.verify = setup.verify;
-            config.profile = setup.profile;
-            configs.push_back(config);
+    for(auto runs : setup.runs) {
+        for(auto max_streams : setup.max_streams) {
+            for(auto gpus : setup.gpus) {
+                for(auto elements : setup.elements) {
+                    for(auto max_value : setup.max_values) {
+                        for(auto skew : setup.skews) {
+                            BenchmarkConfig config;
+                            config.gpus = gpus;
+                            config.elements = elements;
+                            config.max_value = max_value;
+                            config.skew = skew;
+                            config.max_streams_p_gpu = max_streams;
+                            config.runs = runs;
+                            config.verify = setup.verify;
+                            config.profile = setup.profile;
+                            configs.push_back(config);
+                        }
+                    }            
+                }
+            }
         }
     }
     return configs;
@@ -444,7 +469,7 @@ bool load_launch_benchmark_setup(toml::value config_file, std::string profile, B
     std::cout << "Read " << field << std::endl;
     if (config_file.at(profile).contains(field))
     {
-        setup->max_streams = toml::find<short int>(config_file, profile, field);
+        setup->max_streams = toml::find<std::vector<short int>>(config_file, profile, field);
     }
     else
     {
@@ -456,7 +481,7 @@ bool load_launch_benchmark_setup(toml::value config_file, std::string profile, B
     std::cout << "Read " << field << std::endl;
     if (config_file.at(profile).contains(field))
     {
-        setup->runs = toml::find<int>(config_file, profile, field);
+        setup->runs = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {
@@ -469,6 +494,30 @@ bool load_launch_benchmark_setup(toml::value config_file, std::string profile, B
     if (config_file.at(profile).contains(field))
     {
         setup->elements = toml::find<std::vector<long long>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "max_values";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->max_values = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "skews";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->skews = toml::find<std::vector<float>>(config_file, profile, field);
     }
     else
     {
