@@ -118,8 +118,8 @@ void generate_demo_data(index_t elements, short int element_size, short int *ele
     curandGenerator_t rand_gen;
     gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
     gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
-    //gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
-    gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.01));
+    gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
+    //gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.01));
     //gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.3));
     gpuErrchk(curandDestroyGenerator(rand_gen));
 

@@ -115,15 +115,13 @@ int main(int argc, char* argv[]) {
             int threads = hash_benchmark_config.thread_size;
             int blocks = max(element_buffer_size / threads, (index_t)1);
 
-
-
             for(int run_index = 0; run_index < benchmark_config.runs; run_index++) {
                 
                 //print_mem();
                 
                 //std::cout << d_hashed_buffer << " " << d_element_buffer;
 
-                print_mem();
+                //print_mem();
 
                 cudaStream_t *device_stream = new cudaStream_t[benchmark_config.gpus];
                 const int mem_event_count = 4;
@@ -139,9 +137,8 @@ int main(int argc, char* argv[]) {
                 for(int gpu_index = 0; gpu_index < benchmark_config.gpus; gpu_index++) {
                     gpuErrchk(cudaSetDevice(gpu_index));
 
-                    // gpu 0 is the master
-                    if(gpu_index == 0) {
-                        for(int peer_gpu_index = 1; peer_gpu_index < benchmark_config.gpus; peer_gpu_index++) {
+                    for(int peer_gpu_index = 0; peer_gpu_index < benchmark_config.gpus; peer_gpu_index++) {
+                        if(peer_gpu_index != gpu_index) {
                             gpuErrchk(cudaDeviceEnablePeerAccess(peer_gpu_index, 0));
                         }
                     }
@@ -171,7 +168,7 @@ int main(int argc, char* argv[]) {
                         generate_demo_data(element_buffer_size, element_size, &element_chunks, &d_element_buffers[gpu_index]);
                     } else {
                         gpuErrchk(cudaMalloc(&d_hashed_buffers[gpu_index], buffer_sizes[gpu_index] * sizeof(hash_t)));
-                        gpuErrchk(cudaMalloc(&d_element_buffers[gpu_index], buffer_sizes[gpu_index] * sizeof(chunk_t)));
+                        gpuErrchk(cudaMalloc(&d_element_buffers[gpu_index], buffer_sizes[gpu_index] * element_chunks * sizeof(chunk_t)));
                     }
                 }
                 
@@ -181,13 +178,13 @@ int main(int argc, char* argv[]) {
                 for(int gpu_index = 0; gpu_index < benchmark_config.gpus; gpu_index++) {
                     gpuErrchk(cudaSetDevice(gpu_index));
 
+                    int mem_event_offset = (gpu_index-1) * mem_event_count;
                     if(gpu_index > 0) {
-                        gpuErrchk(cudaEventRecord(mem_events[(gpu_index-1) * mem_event_count]));
-                        chunk_t *master_element_buffer = (&d_element_buffers[0])[buffer_offsets[gpu_index]];
-                        gpuErrchk(cudaMemcpyAsync(d_element_buffers[gpu_index], master_element_buffer, buffer_sizes[gpu_index] * sizeof(chunk_t), cudaMemcpyDeviceToDevice, device_stream[gpu_index]));
-                        gpuErrchk(cudaEventRecord(mem_events[(gpu_index-1) * mem_event_count + 1]));
+                        gpuErrchk(cudaEventRecord(mem_events[mem_event_offset], device_stream[gpu_index]));
+                        chunk_t *master_element_buffer = &(d_element_buffers[0][buffer_offsets[gpu_index] * element_chunks]);
+                        gpuErrchk(cudaMemcpyAsync(d_element_buffers[gpu_index], master_element_buffer, buffer_sizes[gpu_index] * element_chunks * sizeof(chunk_t), cudaMemcpyDeviceToDevice, device_stream[gpu_index]));
+                        gpuErrchk(cudaEventRecord(mem_events[mem_event_offset + 1], device_stream[gpu_index]));
                     }
-
 
                     HashConfig hash_config;
                     hash_config.stream = device_stream[gpu_index];
@@ -197,10 +194,10 @@ int main(int argc, char* argv[]) {
                     hash_func(buffer_sizes[gpu_index], 0, element_chunks, d_element_buffers[gpu_index], d_hashed_buffers[gpu_index], hash_config);
 
                     if(gpu_index > 0) {
-                        gpuErrchk(cudaEventRecord(mem_events[(gpu_index-1) * mem_event_count + 2]));
-                        hash_t *master_hash_buffer = (&d_hashed_buffers[0])[buffer_offsets[gpu_index]];
-                        gpuErrchk(cudaMemcpyAsync(master_hash_buffer, d_hashed_buffers[gpu_index], buffer_sizes[gpu_index] * sizeof(chunk_t), cudaMemcpyDeviceToDevice, device_stream[gpu_index]));
-                        gpuErrchk(cudaEventRecord(mem_events[(gpu_index-1) * mem_event_count + 3]));
+                        gpuErrchk(cudaEventRecord(mem_events[mem_event_offset + 2], device_stream[gpu_index]));
+                        hash_t *master_hash_buffer = &(d_hashed_buffers[0][buffer_offsets[gpu_index]]);
+                        gpuErrchk(cudaMemcpyAsync(master_hash_buffer, d_hashed_buffers[gpu_index], buffer_sizes[gpu_index] * sizeof(hash_t), cudaMemcpyDeviceToDevice, device_stream[gpu_index]));
+                        gpuErrchk(cudaEventRecord(mem_events[mem_event_offset + 3], device_stream[gpu_index]));
                     }
                 }
                 gpuErrchk(cudaDeviceSynchronize());
@@ -211,7 +208,7 @@ int main(int argc, char* argv[]) {
                 float merge_runtime_s = 0.0f;
 
                 if(benchmark_config.gpus > 1) {
-                    cudaEventElapsedTime(&elapsed_time_s, mem_events[0], mem_events[benchmark_config.gpus * mem_event_count - 1]);
+                    cudaEventElapsedTime(&elapsed_time_s, mem_events[0], mem_events[(benchmark_config.gpus - 1) * mem_event_count - 1]);
                 } else {
                     cudaEventElapsedTime(&elapsed_time_s, hash_events[0], hash_events[1]);
                 }
@@ -221,21 +218,24 @@ int main(int argc, char* argv[]) {
                     float tmp_dist_runtime;
                     float tmp_kernel_runtime;
                     float tmp_merge_runtime;
-                    if(gpu_index > 1) {
+                    if(gpu_index > 0) {
                         int event_offset = (gpu_index - 1) * mem_event_count;
                         cudaEventElapsedTime(&tmp_dist_runtime, mem_events[event_offset], mem_events[event_offset+1]);
                         cudaEventElapsedTime(&tmp_merge_runtime, mem_events[event_offset+2], mem_events[event_offset+3]);
+                        tmp_dist_runtime /= pow(10, 3);
+                        tmp_merge_runtime /= pow(10, 3);
                         dist_runtime_s += tmp_dist_runtime;
                         merge_runtime_s += tmp_merge_runtime;
                     }
                     int event_offset = gpu_index * hash_event_count;
                     cudaEventElapsedTime(&tmp_kernel_runtime, hash_events[event_offset], hash_events[event_offset+1]);
+                    tmp_kernel_runtime /= pow(10, 3);
                     kernel_runtime_s += tmp_kernel_runtime;
                 }
 
-                dist_runtime_s = dist_runtime_s / (benchmark_config.gpus-1) / pow(10, 3);
-                kernel_runtime_s = kernel_runtime_s / benchmark_config.gpus / pow(10, 3);
-                merge_runtime_s = merge_runtime_s / (benchmark_config.gpus-1) / pow(10, 3);
+                dist_runtime_s = dist_runtime_s / (benchmark_config.gpus-1);
+                kernel_runtime_s = kernel_runtime_s / benchmark_config.gpus;
+                merge_runtime_s = merge_runtime_s / (benchmark_config.gpus-1);
                 
                 elapsed_time_avg += elapsed_time_s;
                 dist_time_avg += dist_runtime_s;
@@ -255,8 +255,8 @@ int main(int argc, char* argv[]) {
                     gpuErrchk(cudaSetDevice(gpu_index));
 
                     // gpu 0 is the master
-                    if(gpu_index == 0) {
-                        for(int peer_gpu_index = 1; peer_gpu_index < benchmark_config.gpus; peer_gpu_index++) {
+                    for(int peer_gpu_index = 0; peer_gpu_index < benchmark_config.gpus; peer_gpu_index++) {
+                        if(gpu_index != peer_gpu_index) {
                             gpuErrchk(cudaDeviceDisablePeerAccess(peer_gpu_index));
                         }
                     }
@@ -298,7 +298,7 @@ int main(int argc, char* argv[]) {
                 hash_result.gb_p_second = ((element_buffer_size * element_size) / elapsed_time_avg) / pow(10, 9);
                 hash_result.hash_p_second = (element_buffer_size / elapsed_time_avg);
                 if(benchmark_config.gpus > 1) {
-                    hash_result.dist_gb_p_second = (element_buffer_size / benchmark_config.gpus) / dist_time_avg / pow(10, 9);
+                    hash_result.dist_gb_p_second = ((element_buffer_size * element_size) / benchmark_config.gpus) / dist_time_avg / pow(10, 9);
                     hash_result.merge_gb_p_second = (element_buffer_size / benchmark_config.gpus) / merge_time_avg / pow(10, 9);
                 }
 
