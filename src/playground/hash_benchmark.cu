@@ -102,7 +102,8 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
         for (int gpu_index = 0; gpu_index < benchmark_config.gpus; gpu_index++)
         {
             gpuErrchk(cudaSetDevice(gpu_index));
-            cudaStreamCreate(&device_stream[gpu_index]);
+            gpuErrchk(cudaStreamCreate(&device_stream[gpu_index]));
+            gpuErrchk(cudaGetLastError());
 
             for (int hash_event_index = 0; hash_event_index < hash_event_count; hash_event_index++)
             {
@@ -130,19 +131,20 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
             hash_func(element_buffer_size, 0, element_chunks, d_element_buffers[gpu_index], d_hashed_buffers[gpu_index], hash_config);
         }
 
-        gpuErrchk(cudaDeviceSynchronize());
-
+        for (int gpu_index = 0; gpu_index < benchmark_config.gpus; gpu_index++)
+        {
+            gpuErrchk(cudaSetDevice(gpu_index));
+            gpuErrchk(cudaDeviceSynchronize());
+            gpuErrchk(cudaGetLastError());
+        }
         /*
          *  Measure
          */
-        for (int gpu_index_1 = 0; gpu_index_1 < benchmark_config.gpus; gpu_index_1++)
+        for (int gpu_index = 0; gpu_index < benchmark_config.gpus; gpu_index++)
         {
-            for (int gpu_index_2 = 0; gpu_index_2 < benchmark_config.gpus; gpu_index_2++)
-            {
-                float tmp_elapsed_time = 0.0f;
-                cudaEventElapsedTime(&tmp_elapsed_time, hash_events[gpu_index_1 * hash_event_count], hash_events[gpu_index_2 * hash_event_count + 1]);
-                elapsed_time_s = max(tmp_elapsed_time / pow(10, 3), elapsed_time_s);
-            }
+            float tmp_elapsed_time = 0.0f;
+            gpuErrchk(cudaEventElapsedTime(&tmp_elapsed_time, hash_events[gpu_index * hash_event_count], hash_events[gpu_index * hash_event_count + 1]));
+            elapsed_time_s = max(tmp_elapsed_time / pow(10, 3), elapsed_time_s);
         }
 
         elapsed_time_avg += elapsed_time_s;
@@ -163,8 +165,7 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
         for (int gpu_index = 0; gpu_index < benchmark_config.gpus; gpu_index++)
         {
             gpuErrchk(cudaSetDevice(gpu_index));
-
-            cudaStreamDestroy(device_stream[gpu_index]);
+            gpuErrchk(cudaStreamDestroy(device_stream[gpu_index]));
             for (int hash_event_index = 0; hash_event_index < hash_event_count; hash_event_index++)
             {
                 cudaEventDestroy(hash_events[gpu_index * hash_event_count + hash_event_index]);
@@ -172,6 +173,7 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
 
             gpuErrchk(cudaFree(d_hashed_buffers[gpu_index]));
             gpuErrchk(cudaFree(d_element_buffers[gpu_index]));
+            gpuErrchk(cudaGetLastError());
         }
 
         delete[] hash_events;
@@ -184,8 +186,8 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
     HashBenchmarkResult hash_result;
     elapsed_time_avg /= benchmark_config.runs;
     hash_result.run_id = -1;
-    hash_result.gb_p_second = ((element_buffer_size * element_size) / elapsed_time_avg) / pow(10, 9);
-    hash_result.hash_p_second = (element_buffer_size / elapsed_time_avg);
+    hash_result.gb_p_second = ((element_buffer_size * element_size * benchmark_config.gpus) / elapsed_time_avg) / pow(10, 9);
+    hash_result.hash_p_second = ((element_buffer_size * benchmark_config.gpus) / elapsed_time_avg);
     hash_result.dist_gb_p_second = 0.0f;
     hash_result.merge_gb_p_second = 0.0f;
     hash_result.benchmark_config = benchmark_config;
@@ -317,6 +319,7 @@ HashBenchmarkResult hash_shared_gpu(BenchmarkConfig benchmark_config, HashBenchm
         }
 
         gpuErrchk(cudaDeviceSynchronize());
+        gpuErrchk(cudaGetLastError());
 
         /*
          * Measure

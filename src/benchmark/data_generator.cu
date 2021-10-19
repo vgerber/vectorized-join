@@ -8,7 +8,8 @@
 #define USE_CURAND 1
 
 #if USE_CURAND
-static curandGenerator_t rand_gen = nullptr;
+// oe instance for each device
+static std::vector<curandGenerator_t> rand_gens;
 #endif
 
 __global__
@@ -129,17 +130,27 @@ void generate_demo_data(index_t elements, short int element_size, short int *ele
     index_t distribution_values_count = elements * *element_chunks * (sizeof(chunk_t) / sizeof(uint32_t));
     gpuErrchk(cudaMalloc(&d_distribution, distribution_values_count * sizeof(float)));
 
-    curandGenerator_t rand_gen;
-    gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
-    gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
+    if(rand_gens.size() == 0) {
+        int device_count;
+        cudaGetDeviceCount(&device_count);
+        rand_gens = std::vector<curandGenerator_t>(device_count);
+    }
+
+    int device_index = 0;
+    gpuErrchk(cudaGetDevice(&device_index));
+    curandGenerator_t rand_gen = rand_gens[device_index];
+    if(!rand_gen) {
+        gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
+        gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
+    }
     gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
     //gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.01));
     //gpuErrchk(curandGenerateNormal(rand_gen, d_distribution, distribution_values_count, 0.5f, 0.3));
-    gpuErrchk(curandDestroyGenerator(rand_gen));
 
     generate_demo_data_kernel<<<max(elements/256, 1ULL), 256>>>(elements, element_size, *element_chunks, *buffer, d_distribution);
     
     gpuErrchk(cudaDeviceSynchronize());
+    gpuErrchk(cudaGetLastError());
     gpuErrchk(cudaFree(d_distribution));
 #else    
     
@@ -156,10 +167,20 @@ void generate_table_data(db_table &table, int max_value, float skew) {
     index_t distribution_values_count = table.size * table.column_count;
     gpuErrchk(cudaMalloc(&d_distribution, distribution_values_count * sizeof(float)));
 
+    if(rand_gens.size() == 0) {
+        int device_count;
+        cudaGetDeviceCount(&device_count);
+        rand_gens = std::vector<curandGenerator_t>(device_count);
+    }
+
+    int device_index = 0;
+    gpuErrchk(cudaGetDevice(&device_index));
+    curandGenerator_t rand_gen = rand_gens[device_index];
+    std::cout << device_index << std::endl;
     if(!rand_gen) {
         gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
         //gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
-        gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, 0));
+        gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
     }
 
     gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
