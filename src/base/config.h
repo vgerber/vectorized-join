@@ -18,7 +18,7 @@
 #endif
 
 #define BENCHMARK_PART 0
-#define PROBE_MODE 2
+#define PROBE_MODE 0
 #define EXTRACT_MODE 0
 
 

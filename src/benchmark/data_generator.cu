@@ -7,6 +7,10 @@
 
 #define USE_CURAND 1
 
+#if USE_CURAND
+static curandGenerator_t rand_gen = nullptr;
+#endif
+
 __global__
 void zipf_constant_kernel(int max_rank, float skew, float *zipf_constant) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -49,6 +53,16 @@ void zipf_kernel(int elements, column_t *element_buffer, float *uniform_values, 
                 break;
             }
         }
+        
+    }
+}
+
+__global__
+void uniform_kernel(int elements, column_t *element_buffer, float *uniform_values, column_t max_value) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+    for(int value_index = index; value_index < elements; value_index += stride) {
+        element_buffer[value_index] = uniform_values[value_index] * max_value;
         
     }
 }
@@ -142,28 +156,38 @@ void generate_table_data(db_table &table, int max_value, float skew) {
     index_t distribution_values_count = table.size * table.column_count;
     gpuErrchk(cudaMalloc(&d_distribution, distribution_values_count * sizeof(float)));
 
-    curandGenerator_t rand_gen;
-    gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
-    gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
+    if(!rand_gen) {
+        gpuErrchk(curandCreateGenerator(&rand_gen, CURAND_RNG_PSEUDO_DEFAULT));
+        //gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, time(NULL)));
+        gpuErrchk(curandSetPseudoRandomGeneratorSeed(rand_gen, 0));
+    }
+
     gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
-    gpuErrchk(curandDestroyGenerator(rand_gen));
+    //gpuErrchk(curandDestroyGenerator(rand_gen));
 
-    float *d_zipf_constant = nullptr;
-    float *d_zipf_distribution = nullptr;
-    gpuErrchk(cudaMalloc(&d_zipf_constant, sizeof(float)));
-    gpuErrchk(cudaMemset(d_zipf_constant, 0, sizeof(float)));
-    gpuErrchk(cudaMalloc(&d_zipf_distribution, max_value * sizeof(float)));
+    if(skew > 0.0f) {
+        float *d_zipf_constant = nullptr;
+        float *d_zipf_distribution = nullptr;
+        gpuErrchk(cudaMalloc(&d_zipf_constant, sizeof(float)));
+        gpuErrchk(cudaMemset(d_zipf_constant, 0, sizeof(float)));
+        gpuErrchk(cudaMalloc(&d_zipf_distribution, max_value * sizeof(float)));
 
-    int threads = 256;
-    zipf_constant_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant);    
-    zipf_distribution_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant, d_zipf_distribution);
-    zipf_kernel<<<max(1ULL, table.size * max_value / threads), threads>>>(table.size, table.column_values, d_distribution, d_zipf_distribution, max_value, skew);    
+        int threads = 256;
+        zipf_constant_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant);    
+        zipf_distribution_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant, d_zipf_distribution);
+        zipf_kernel<<<max(1ULL, table.size * max_value / threads), threads>>>(table.size, table.column_values, d_distribution, d_zipf_distribution, max_value, skew);    
+        
+        
+        gpuErrchk(cudaFree(d_distribution));
+        gpuErrchk(cudaFree(d_zipf_constant));
+        gpuErrchk(cudaFree(d_zipf_distribution));
+    } else {
+        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_values, d_distribution, max_value);    
+    }
+
     primary_key_kernel<<<max(table.size/256, 1ULL), 256>>>(table);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaGetLastError());
-    gpuErrchk(cudaFree(d_distribution));
-    gpuErrchk(cudaFree(d_zipf_constant));
-    gpuErrchk(cudaFree(d_zipf_distribution));
 
 }
 

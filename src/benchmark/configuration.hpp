@@ -14,6 +14,8 @@ struct HashBenchmarkSetup {
 };
 
 struct ProbeBenchmarkSetup {
+    std::vector<int> probe_modes;
+
     // build
     std::vector<float> probe_build_table_loads;
     std::vector<int> probe_build_threads;
@@ -25,16 +27,17 @@ struct ProbeBenchmarkSetup {
 };
 
 struct JoinBenchmarkSetup {
+    std::vector<int> buckets;
     std::vector<float> rs_scales;
     std::vector<int> rs_join_columns;
     std::vector<int> vector_bytes_sizes;
-    bool vectorize = false;
 };
 
 struct BenchmarkSetup
 {
     // launch
     std::vector<int> gpus;
+    std::vector<int> gpu_modes;
     std::vector<int> runs;
     std::vector<short int> max_streams;
     
@@ -68,20 +71,20 @@ struct BenchmarkSetup
 
 struct JoinBenchmarkConfig
 {
+    int buckets = 2;
     int rs_columns = 0;
     float rs_scale = 1.0;
-    bool vectorize = false;
     int vector_bytes_size = 0;
 
     static std::string to_string_header() {
         std::ostringstream string_stream;
-        string_stream << "rs_columns,rs_scale";
+        string_stream << "rs_columns,rs_scale,buckets,vector_bytes_size";
         return string_stream.str();
     }
 
     std::string to_string() {
         std::ostringstream string_stream;
-        string_stream << rs_columns << "," << rs_scale;
+        string_stream << rs_columns << "," << rs_scale << "," << buckets << "," << vector_bytes_size;
         return string_stream.str();
     }
 };
@@ -110,6 +113,8 @@ struct HashBenchmarkConfig {
 };
 
 struct ProbeBenchmarkConfig {
+    int probe_mode;
+
     // build
     float build_table_load;
     int build_threads;
@@ -122,7 +127,8 @@ struct ProbeBenchmarkConfig {
 
     static std::string to_string_header() {
         std::ostringstream string_stream;
-        string_stream << "probe_build_table_load,"
+        string_stream << "probe_mode,"
+            << "probe_build_table_load,"
             << "probe_build_threads,"
             << "probe_build_n_per_thread,"
             << "probe_extract_threads,"
@@ -132,7 +138,8 @@ struct ProbeBenchmarkConfig {
 
     std::string to_string() {
         std::ostringstream string_stream;
-        string_stream << build_table_load << ","
+        string_stream << probe_mode << ","
+            << build_table_load << ","
             << build_threads << ","
             << build_n_per_thread << ","
             << extract_threads << ","
@@ -143,6 +150,7 @@ struct ProbeBenchmarkConfig {
 
 struct BenchmarkConfig {
     int gpus;
+    int gpu_mode;
     int runs;
     short int max_streams_p_gpu;
     bool verify;
@@ -157,6 +165,7 @@ struct BenchmarkConfig {
         std::ostringstream string_stream;
         string_stream << "runs,"
             << "gpus,"
+            << "gpu_mode,"
             << "elements,"
             << "max_value,"
             << "skew,"
@@ -169,6 +178,7 @@ struct BenchmarkConfig {
         std::ostringstream string_stream;
         string_stream << runs << ","
             << gpus << ","
+            << gpu_mode << ","
             << elements << ","
             << max_value << ","
             << skew << ","
@@ -215,18 +225,21 @@ std::vector<HashBenchmarkConfig> get_hash_benchmark_configs(BenchmarkSetup setup
 std::vector<ProbeBenchmarkConfig> get_probe_benchmark_configs(BenchmarkSetup setup) {
     std::vector<ProbeBenchmarkConfig> configs;
     if(setup.has_probe_setup) {
-        for(auto build_n_per_thread : setup.probe_setup.probe_build_n_per_threads) {
-            for(auto build_threads : setup.probe_setup.probe_build_threads) {
-                for(auto build_table_load : setup.probe_setup.probe_build_table_loads) {
-                    for(auto extract_n_per_thread : setup.probe_setup.probe_extract_n_per_threads) {
-                        for(auto extract_threads : setup.probe_setup.probe_extract_threads) {
-                            ProbeBenchmarkConfig config;
-                            config.build_n_per_thread = build_n_per_thread;
-                            config.build_threads = build_threads;
-                            config.build_table_load = build_table_load;
-                            config.extract_n_per_thread = extract_n_per_thread;
-                            config.extract_threads = extract_threads;
-                            configs.push_back(config);
+        for(auto probe_mode : setup.probe_setup.probe_modes) {
+            for(auto build_n_per_thread : setup.probe_setup.probe_build_n_per_threads) {
+                for(auto build_threads : setup.probe_setup.probe_build_threads) {
+                    for(auto build_table_load : setup.probe_setup.probe_build_table_loads) {
+                        for(auto extract_n_per_thread : setup.probe_setup.probe_extract_n_per_threads) {
+                            for(auto extract_threads : setup.probe_setup.probe_extract_threads) {
+                                ProbeBenchmarkConfig config;
+                                config.probe_mode = probe_mode;
+                                config.build_n_per_thread = build_n_per_thread;
+                                config.build_threads = build_threads;
+                                config.build_table_load = build_table_load;
+                                config.extract_n_per_thread = extract_n_per_thread;
+                                config.extract_threads = extract_threads;
+                                configs.push_back(config);
+                            }
                         }
                     }
                 }
@@ -242,21 +255,24 @@ std::vector<BenchmarkConfig> get_benchmark_configs(BenchmarkSetup setup) {
     for(auto runs : setup.runs) {
         for(auto max_streams : setup.max_streams) {
             for(auto gpus : setup.gpus) {
-                for(auto elements : setup.elements) {
-                    for(auto max_value : setup.max_values) {
-                        for(auto skew : setup.skews) {
-                            BenchmarkConfig config;
-                            config.gpus = gpus;
-                            config.elements = elements;
-                            config.max_value = max_value;
-                            config.skew = skew;
-                            config.max_streams_p_gpu = max_streams;
-                            config.runs = runs;
-                            config.verify = setup.verify;
-                            config.profile = setup.profile;
-                            configs.push_back(config);
-                        }
-                    }            
+                for(auto gpu_mode : setup.gpu_modes) {
+                    for(auto elements : setup.elements) {
+                        for(auto max_value : setup.max_values) {
+                            for(auto skew : setup.skews) {
+                                BenchmarkConfig config;
+                                config.gpus = gpus;
+                                config.gpu_mode = gpu_mode;
+                                config.elements = elements;
+                                config.max_value = max_value;
+                                config.skew = skew;
+                                config.max_streams_p_gpu = max_streams;
+                                config.runs = runs;
+                                config.verify = setup.verify;
+                                config.profile = setup.profile;
+                                configs.push_back(config);
+                            }
+                        }            
+                    }
                 }
             }
         }
@@ -270,18 +286,15 @@ std::vector<JoinBenchmarkConfig> get_join_configs(BenchmarkSetup setup) {
     if(setup.has_join_setup) {
         for(auto rs_scale : setup.join_setup.rs_scales) {
             for(auto rs_columns : setup.join_setup.rs_join_columns) {
-                JoinBenchmarkConfig config;
-                config.vectorize = setup.join_setup.vectorize;
-                config.rs_columns = rs_columns;
-                config.rs_scale = rs_scale;
-                if(setup.join_setup.vectorize) {
+                for(auto buckets : setup.join_setup.buckets) {
                     for(auto vector_bytes_size : setup.join_setup.vector_bytes_sizes) {
+                        JoinBenchmarkConfig config;
+                        config.rs_columns = rs_columns;
+                        config.rs_scale = rs_scale;
+                        config.buckets = buckets;
                         config.vector_bytes_size = vector_bytes_size;
                         configs.push_back(config);
                     }
-                } else {
-                    config.vector_bytes_size = 0;
-                    configs.push_back(config);
                 }
             }
         }
@@ -347,6 +360,18 @@ bool load_probe_benchmark_setup(toml::value config_file, std::string profile, Be
     if (config_file.at(profile).contains(field))
     {
         setup->probe_setup.probe_extract_threads = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "probe_modes";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->probe_setup.probe_modes = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {
@@ -421,30 +446,28 @@ bool load_join_benchmark_setup(toml::value config_file, std::string profile, Ben
         return false;
     }
 
-    field = "vectorize";
+    field = "buckets";
     std::cout << "Read " << field << std::endl;
     if (config_file.at(profile).contains(field))
     {
-        setup->join_setup.vectorize = toml::find<bool>(config_file, profile, field);
+        setup->join_setup.buckets = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {
         std::cout << profile << "." << field << " not found" << std::endl;
         return false;
     }
-
-    if(setup->join_setup.vectorize) {
-        field = "vector_bytes_sizes";
-        std::cout << "Read " << field << std::endl;
-        if (config_file.at(profile).contains(field))
-        {
-            setup->join_setup.vector_bytes_sizes = toml::find<std::vector<int>>(config_file, profile, field);
-        }
-        else
-        {
-            std::cout << profile << "." << field << " not found" << std::endl;
-            return false;
-        }
+    
+    field = "vector_bytes_sizes";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->join_setup.vector_bytes_sizes = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
     }
 
     return true;
@@ -458,6 +481,18 @@ bool load_launch_benchmark_setup(toml::value config_file, std::string profile, B
     if (config_file.at(profile).contains(field))
     {
         setup->gpus = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "gpu_modes";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->gpu_modes = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {

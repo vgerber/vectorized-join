@@ -6,6 +6,7 @@ typedef unsigned long long hash_t;
 typedef unsigned long long index_t;
 typedef unsigned int index_s_t;
 typedef unsigned long long column_t;
+typedef uint1 chunk_t;
 
 struct db_hash_table {
     hash_t * hashes = nullptr;

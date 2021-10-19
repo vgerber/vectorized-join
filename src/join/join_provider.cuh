@@ -2,6 +2,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
 
 #include "hash/hash.cu"
 #include "join_provider.cu"
@@ -10,55 +11,45 @@ struct BucketConfig
 {
     int buckets = 0;
     int bucket_depth = 0;
-    BucketConfig *sub_buckets = nullptr;
+    std::vector<std::shared_ptr<BucketConfig>> sub_buckets;
     index_t *histogram = nullptr;
     index_t *offsets = nullptr;
     db_hash_table hash_table;
     db_table table;
 
-    BucketConfig()
-    {
-    }
-
     ~BucketConfig()
     {
         delete[] histogram;
         delete[] offsets;
-        if (sub_buckets)
-        {
-            for (int bucket_index = 0; bucket_index < buckets; bucket_index++)
-            {
-                sub_buckets[bucket_index].~BucketConfig();
-            }
-        }
     }
 
     void print()
     {
         std::cout << std::string(bucket_depth, '-') << hash_table.size << std::endl;
-        if (sub_buckets)
+        if (sub_buckets.size() > 0)
         {
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++)
             {
-                sub_buckets[bucket_index].print();
+                sub_buckets[bucket_index]->print();
             }
         }
     }
 
-    void print_compare(const BucketConfig *compare_config)
+    void print_compare(const std::shared_ptr<BucketConfig> compare_config)
     {
         std::cout << std::string(bucket_depth, '-') << hash_table.size << ":" << compare_config->hash_table.size << std::endl;
-        if (sub_buckets)
+        if (sub_buckets.size() > 0)
         {
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++)
             {
-                sub_buckets[bucket_index].print_compare(&compare_config->sub_buckets[bucket_index]);
+                sub_buckets[bucket_index]->print_compare(compare_config->sub_buckets[bucket_index]);
             }
         }
     }
 };
 
-typedef std::pair<BucketConfig *, BucketConfig *> bucket_pair_t;
+typedef std::shared_ptr<BucketConfig> bucket_ptr;
+typedef std::pair<bucket_ptr, bucket_ptr> bucket_pair_t;
 
 struct bucket_pair_comparator {
     bool operator() (const bucket_pair_t &pair1, const bucket_pair_t &pair2) {
@@ -125,6 +116,7 @@ struct JoinConfig {
     bool profile_enabled = true;
     bool vectorize = false;
     int vector_bytes_size = 0;
+    int buckets = 2;
 
     HashConfig hash_config;
     PartitionConfig partition_config;
@@ -135,6 +127,7 @@ struct DeviceConfig
 {
     int device_id = 0;
     
+    std::vector<std::shared_ptr<std::mutex>> stream_locks;
     std::vector<cudaStream_t> streams;
     std::vector<ProbeConfig> stream_probe_configurations;
     std::vector<PartitionConfig> stream_partition_configurations;
@@ -185,7 +178,7 @@ struct DeviceConfig
 
     void synchronize_device() {
         for(auto stream : streams) {
-            cudaStreamSynchronize(stream);
+            gpuErrchk(cudaStreamSynchronize(stream));
         }
     }
 
@@ -248,11 +241,11 @@ public:
                 index_t r_index = match_index % r_table.size;
                 index_t s_index = match_index / r_table.size;
 
-                for(int column_index = 0; column_index < rs_half_column_count; column_index++) {
-                    index_t rs_offset = rs_index * joined_rs_table.column_count;
-                    joined_rs_table.column_values[rs_offset + column_index] = r_table.column_values[r_index * r_table.column_count + column_index];
-                    joined_rs_table.column_values[rs_offset + rs_half_column_count + column_index] = s_table.column_values[s_index * s_table.column_count + column_index]; 
-                }
+                joined_rs_table.primary_keys[rs_index] = rs_index+1;
+
+                index_t rs_offset = rs_index * joined_rs_table.column_count;
+                joined_rs_table.column_values[rs_offset] = r_table.primary_keys[r_index];
+                joined_rs_table.column_values[rs_offset + 1] = s_table.primary_keys[s_index]; 
                 rs_index++;
             }
         }
@@ -269,12 +262,11 @@ public:
         std::cout << "Join " << std::endl;
 #endif
 
-        int buckets = 2;
+        int buckets = join_config.buckets;
         int radix_width = std::ceil(std::log2(buckets));
         int bins = (1 << radix_width);
 
         int max_radix_steps = (8 * sizeof(index_t)) / radix_width;
-        int max_bucket_r_elements = join_config.probe_config.max_r_elements;
 
         db_hash_table r_hash_table(r_table.size, r_table.gpu);
         db_hash_table r_hash_table_swap(r_table.size, r_table.gpu);
@@ -288,15 +280,15 @@ public:
         hash_table(r_table, r_hash_table, devices[0], join_config.hash_config);
         hash_table(s_table, s_hash_table, devices[0], join_config.hash_config);
         
-        BucketConfig r_bucket_config;
-        r_bucket_config.buckets = bins;
-        r_bucket_config.table = r_table;
-        r_bucket_config.hash_table = r_hash_table;
+        bucket_ptr r_bucket_config = std::make_shared<BucketConfig>();;
+        r_bucket_config->buckets = bins;
+        r_bucket_config->table = r_table;
+        r_bucket_config->hash_table = r_hash_table;
 
-        BucketConfig s_bucket_config;
-        s_bucket_config.buckets = bins;
-        s_bucket_config.table = s_table;
-        s_bucket_config.hash_table = s_hash_table;
+        bucket_ptr s_bucket_config = std::make_shared<BucketConfig>();
+        s_bucket_config->buckets = bins;
+        s_bucket_config->table = s_table;
+        s_bucket_config->hash_table = s_hash_table;
 
         std::vector<bucket_pair_t> bucket_pairs;
 
@@ -306,24 +298,21 @@ public:
         auto hash_end = std::chrono::high_resolution_clock::now();
 
         auto partition_start = std::chrono::high_resolution_clock::now();
-        partition_r_recursive(r_table_swap, r_hash_table_swap, radix_width, &r_bucket_config, max_bucket_r_elements, max_radix_steps, devices[0], true);
-        partition_s_recursive(s_table_swap, s_hash_table_swap, radix_width, &s_bucket_config, &r_bucket_config, max_radix_steps, devices[0], &bucket_pairs, true);
+        partition_recursive(r_table_swap, r_hash_table_swap, s_table_swap, s_hash_table_swap, radix_width, r_bucket_config, s_bucket_config, &bucket_pairs, join_config.vector_bytes_size, max_radix_steps, devices[0], true);
         auto partition_end = std::chrono::high_resolution_clock::now();
 
 #if DEBUG_PRINT
-        r_bucket_config.print_compare(&s_bucket_config);
+        r_bucket_config->print_compare(s_bucket_config);
 #endif
 
         auto probe_start = std::chrono::high_resolution_clock::now();
         std::vector<db_table> joined_rs_tables;
         probe(bucket_pairs, radix_width, devices[0], joined_rs_tables);
-        auto probe_end = std::chrono::high_resolution_clock::now();
-        
         for(auto device : devices) {
             device->synchronize_device();
         }
+        auto probe_end = std::chrono::high_resolution_clock::now();
         
-
         r_hash_table.free();
         r_hash_table_swap.free();
         r_table_swap.free();
@@ -337,8 +326,14 @@ public:
 
         auto merge_start = std::chrono::high_resolution_clock::now();
         merge_joined_tables(joined_rs_tables, joined_rs_table, devices[0]);
+        for(auto device : devices) {
+            device->synchronize_device();
+        }
         auto merge_end = std::chrono::high_resolution_clock::now();
 
+        for(auto &partial_rs_table : joined_rs_tables) {
+            partial_rs_table.free();
+        }
         joined_rs_tables.clear();
 
         auto join_end = std::chrono::high_resolution_clock::now();
@@ -390,7 +385,7 @@ private:
             cudaStreamCreate(&stream);
             
             device_config->streams.push_back(stream);
-
+            device_config->stream_locks.push_back(std::make_shared<std::mutex>());
 
             ProbeConfig probe_config = join_config.probe_config;
             probe_config.stream = stream;
@@ -425,122 +420,87 @@ private:
         devices.push_back(device_config);
     }
 
-    void partition_r_recursive(db_table r_table_swap, db_hash_table r_hash_table_swap, int radix_width, BucketConfig *bucket_config, index_t max_elements, index_t max_radix_steps, DeviceConfig *device_config, bool gpu = true)
-    {
-        if (bucket_config->hash_table.size > 0 && bucket_config->hash_table.size > max_elements && bucket_config->bucket_depth <= max_radix_steps)
+    void partition_recursive(db_table r_table_swap, db_hash_table r_hash_table_swap, db_table s_table_swap, db_hash_table s_hash_table_swap, int radix_width, bucket_ptr r_bucket_config, bucket_ptr s_bucket_config, std::vector<bucket_pair_t> *bucket_pairs, int max_partition_bytes, index_t max_radix_steps, DeviceConfig *device_config, bool gpu = true) {
+        int partition_bytes = r_table_swap.get_bytes() + r_hash_table_swap.get_bytes() + s_table_swap.get_bytes() + s_hash_table_swap.get_bytes();
+        bool is_any_table_empty = r_bucket_config->hash_table.size == 0 || s_bucket_config->hash_table.size == 0; 
+        if (!is_any_table_empty && r_bucket_config->bucket_depth < max_radix_steps && partition_bytes > max_partition_bytes)
         {
+            int radix_shift = (radix_width * r_bucket_config->bucket_depth);
+            int buckets = r_bucket_config->buckets;
             
-            int radix_shift = (radix_width * bucket_config->bucket_depth);
-            int buckets = bucket_config->buckets;
-
-            bucket_config->histogram = new index_t[buckets];
-            bucket_config->offsets = new index_t[buckets];
+            r_bucket_config->histogram = new index_t[buckets];
+            r_bucket_config->offsets = new index_t[buckets];
             
+            s_bucket_config->histogram = new index_t[buckets];
+            s_bucket_config->offsets = new index_t[buckets];
             if (gpu)
             {
                 int stream_index = device_config->get_next_queue_index();
-                PartitionConfig partition_config = device_config->stream_partition_configurations[stream_index];
-                partition_config.set_radix_width(radix_width);
-                partition_gpu(bucket_config->table, bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, partition_config);
-            
-                join_summary.partition_summaries.push_back(partition_config.profiling_summary);
-            }
-            else
-            {
-                //partition(bucket_config->data, r_swap_entry, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, gpu);
-            }
+                std::lock_guard<std::mutex> stream_lock(*device_config->stream_locks[stream_index]);
+                                
+                PartitionConfig r_partition_config = device_config->stream_partition_configurations[stream_index];
+                r_partition_config.set_radix_width(radix_width);
+                partition_gpu(r_bucket_config->table, r_bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, r_bucket_config->histogram, r_bucket_config->offsets, r_partition_config);
+                join_summary.partition_summaries.push_back(r_partition_config.profiling_summary);
+                
+                PartitionConfig s_partition_config = device_config->stream_partition_configurations[stream_index];
+                s_partition_config.set_radix_width(radix_width);
+                partition_gpu(s_bucket_config->table, s_bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, s_bucket_config->histogram, s_bucket_config->offsets, s_partition_config);
 
-
-
-            bucket_config->sub_buckets = new BucketConfig[bucket_config->buckets];
-
-            std::vector<std::thread> partition_threads;
-            for (int bucket_index = 0; bucket_index < buckets; bucket_index++)
-            {
-                index_t sub_elements = bucket_config->histogram[bucket_index];
-                index_t sub_offset = bucket_config->offsets[bucket_index];
-
-                BucketConfig *sub_bucket = &bucket_config->sub_buckets[bucket_index];
-                sub_bucket->bucket_depth = bucket_config->bucket_depth + 1;
-                sub_bucket->histogram = nullptr;
-                sub_bucket->offsets = nullptr;
-                sub_bucket->sub_buckets = nullptr;
-                sub_bucket->buckets = buckets;
-
-                // set data for bucket and start partitioning on reduced data set
-                sub_bucket->hash_table = db_hash_table(sub_offset, sub_elements, r_hash_table_swap);
-                sub_bucket->table = db_table(sub_offset, sub_elements, r_table_swap);
-
-                db_table sub_r_table_swap(sub_offset, sub_elements, bucket_config->table);
-                db_hash_table sub_r_hash_table_swap(sub_offset, sub_elements, bucket_config->hash_table);
-
-                //std::cout << "PP " << sub_bucket << " -> " << sub_r_table_swap.size << ":" << sub_bucket->table.size << std::endl;
-
-                auto partition_child = [this, sub_r_table_swap, sub_r_hash_table_swap, radix_width, sub_bucket, max_elements, max_radix_steps, device_config, gpu]() { 
-                    partition_r_recursive(sub_r_table_swap, sub_r_hash_table_swap, radix_width, sub_bucket, max_elements, max_radix_steps, device_config, gpu); 
-                };
-                partition_child();
-                //partition_threads.push_back(std::thread(partition_child));
-            }
-
-            for(auto &partition_thread : partition_threads) {
-                partition_thread.join();
-            }
-        }
-    }
-
-    void partition_s_recursive(db_table s_table_swap, db_hash_table s_hash_table_swap, int radix_width, BucketConfig *bucket_config, BucketConfig *r_config, index_t max_radix_steps, DeviceConfig *device_config, std::vector<bucket_pair_t> *bucket_pairs, bool gpu = true)
-    {
-
-        if (bucket_config->hash_table.size > 0 && r_config->sub_buckets && r_config->hash_table.size > 0)
-        {
-            int radix_shift = (radix_width * bucket_config->bucket_depth);
-            int buckets = bucket_config->buckets;
-
-            bucket_config->histogram = new index_t[buckets];
-            bucket_config->offsets = new index_t[buckets];
-            bucket_config->sub_buckets = new BucketConfig[bucket_config->buckets];
-            if (gpu)
-            {
-                int stream_index = device_config->get_next_queue_index();
-                PartitionConfig partition_config = device_config->stream_partition_configurations[stream_index];
-                partition_config.set_radix_width(radix_width);
-                partition_gpu(bucket_config->table, bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, bucket_config->histogram, bucket_config->offsets, partition_config);
-
-                join_summary.partition_summaries.push_back(partition_config.profiling_summary);
+                gpuErrchk(cudaStreamSynchronize(s_partition_config.stream)); 
+                join_summary.partition_summaries.push_back(s_partition_config.profiling_summary);
             }
             else
             {
                 //partition(bucket_config->data, s_swap_entry, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, gpu);
             }
+            r_bucket_config->buckets = buckets;
+            s_bucket_config->buckets = buckets;
 
+            r_bucket_config->sub_buckets = std::vector<bucket_ptr>(buckets);
+            s_bucket_config->sub_buckets = std::vector<bucket_ptr>(buckets);
             std::vector<std::thread> partition_threads;
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++)
             {
-                index_t sub_elements = bucket_config->histogram[bucket_index];
-                index_t sub_offset = bucket_config->offsets[bucket_index];
+                /*
+                * R - Swap
+                */ 
+                index_t r_sub_elements = r_bucket_config->histogram[bucket_index];
+                index_t r_sub_offset = r_bucket_config->offsets[bucket_index];
+                index_t s_sub_elements = s_bucket_config->histogram[bucket_index];
+                index_t s_sub_offset = s_bucket_config->offsets[bucket_index];
 
                 // configure bucket
-                BucketConfig *sub_bucket = &bucket_config->sub_buckets[bucket_index];
-                sub_bucket->bucket_depth = bucket_config->bucket_depth + 1;
-                sub_bucket->histogram = nullptr;
-                sub_bucket->offsets = nullptr;
-                sub_bucket->sub_buckets = nullptr;
-                sub_bucket->buckets = buckets;
+                bucket_ptr r_sub_bucket = std::make_shared<BucketConfig>();
+                r_bucket_config->sub_buckets[bucket_index] = r_sub_bucket;
+                r_sub_bucket->bucket_depth = r_bucket_config->bucket_depth + 1;
+                r_sub_bucket->histogram = nullptr;
+                r_sub_bucket->offsets = nullptr;
+                r_sub_bucket->buckets = buckets;
+
+                bucket_ptr s_sub_bucket = std::make_shared<BucketConfig>();
+                s_bucket_config->sub_buckets[bucket_index] = s_sub_bucket;
+                s_sub_bucket->bucket_depth = s_bucket_config->bucket_depth + 1;
+                s_sub_bucket->histogram = nullptr;
+                s_sub_bucket->offsets = nullptr;
+                s_sub_bucket->buckets = buckets;
 
                 // set data for bucket
-                sub_bucket->table = db_table(sub_offset, sub_elements, s_table_swap);
-                sub_bucket->hash_table = db_hash_table(sub_offset, sub_elements, s_hash_table_swap);
+                r_sub_bucket->table = db_table(r_sub_offset, r_sub_elements, r_table_swap);
+                r_sub_bucket->hash_table = db_hash_table(r_sub_offset, r_sub_elements, r_hash_table_swap);
+
+                s_sub_bucket->table = db_table(s_sub_offset, s_sub_elements, s_table_swap);
+                s_sub_bucket->hash_table = db_hash_table(s_sub_offset, s_sub_elements, s_hash_table_swap);
 
                 // set data for swap
-                db_table sub_s_table_swap(sub_offset, sub_elements, bucket_config->table);
-                db_hash_table sub_s_hash_table_swap(sub_offset, sub_elements, bucket_config->hash_table);
+                db_table sub_r_table_swap(r_sub_offset, r_sub_elements, r_bucket_config->table);
+                db_hash_table sub_r_hash_table_swap(r_sub_offset, r_sub_elements, r_bucket_config->hash_table);
 
-                BucketConfig *r_sub_bucket = &r_config->sub_buckets[bucket_index];
-                //partition_s_recursive(sub_s_table_swap, sub_s_hash_table_swap, radix_width, sub_bucket, r_sub_bucket, max_radix_steps, device_config, bucket_pairs, gpu);
+                db_table sub_s_table_swap(s_sub_offset, s_sub_elements, s_bucket_config->table);
+                db_hash_table sub_s_hash_table_swap(s_sub_offset, s_sub_elements, s_bucket_config->hash_table);
                 
-                auto partition_child = [this, sub_s_table_swap, sub_s_hash_table_swap, radix_width, sub_bucket, r_sub_bucket, max_radix_steps, device_config, bucket_pairs, gpu](){ 
-                    partition_s_recursive(sub_s_table_swap, sub_s_hash_table_swap, radix_width, sub_bucket, r_sub_bucket, max_radix_steps, device_config, bucket_pairs, gpu); 
+                auto partition_child = [this, sub_r_table_swap, sub_r_hash_table_swap, sub_s_table_swap, sub_s_hash_table_swap, radix_width, r_sub_bucket, s_sub_bucket, bucket_pairs, max_partition_bytes, max_radix_steps, device_config, gpu](){ 
+                    partition_recursive(sub_r_table_swap, sub_r_hash_table_swap, sub_s_table_swap, sub_s_hash_table_swap, radix_width, r_sub_bucket, s_sub_bucket, bucket_pairs, max_partition_bytes, max_radix_steps, device_config, gpu); 
                 };
                 partition_child();
                 //partition_threads.push_back(std::thread(partition_child));
@@ -550,66 +510,79 @@ private:
             }
         }
         // add leaf bucket to bucket pair list
-        else if (bucket_config->hash_table.size > 0 && !r_config->sub_buckets && r_config->hash_table.size > 0)
+        bool is_leaf = r_bucket_config->sub_buckets.size() == 0 && s_bucket_config->sub_buckets.size() == 0;
+        if (!is_any_table_empty && is_leaf)
         {
             std::lock_guard<std::mutex> lock(partition_lock);
-            add_and_vectorize_bucket(r_config, bucket_config, bucket_pairs);            
+            add_and_vectorize_bucket(r_bucket_config, s_bucket_config, bucket_pairs);            
         }
     }
 
-    void add_and_vectorize_bucket(BucketConfig *r_bucket, BucketConfig *s_bucket, std::vector<bucket_pair_t> *vectorized_buckets) {
+    void add_and_vectorize_bucket(bucket_ptr r_bucket, bucket_ptr s_bucket, std::vector<bucket_pair_t> *vectorized_buckets) {
         if(join_config.vectorize) {
+            // split r data into buckets fitting the vector size limitation for r
             
-            int r_size = r_bucket->table.get_bytes() + r_bucket->hash_table.get_bytes();
-            int s_vector_size_limitation = join_config.vector_bytes_size - min(join_config.probe_config.max_r_elements, r_size);
+            int r_size_limitation = join_config.vector_bytes_size/2;
+            if(join_config.probe_config.probe_mode == ProbeConfig::MODE_PARTITION_R) {
+                r_size_limitation = min(r_size_limitation, join_config.probe_config.max_r_bytes);
+            }
 
+            int r_sub_buckets_size = 1;
+            int r_bytes = r_bucket->table.get_bytes() + join_config.probe_config.get_table_size(r_bucket->table.size);
+            int r_sub_elements = r_bucket->table.size;
+            if(r_bytes > r_size_limitation) {
+                r_sub_buckets_size = max(1, (int)ceil((r_bytes)/r_size_limitation));
+                r_sub_elements = ceil((float)r_bucket->table.size / r_sub_buckets_size);
+            }
+            
 
-            int s_size = s_bucket->table.get_bytes() + s_bucket->hash_table.get_bytes();
-            if(s_size < s_vector_size_limitation) {
-                vectorized_buckets->push_back(std::make_pair(r_bucket, s_bucket));
-            } else {
-                
+            std::vector<bucket_ptr> r_sub_buckets = std::vector<bucket_ptr>(r_sub_buckets_size);
+            for(int sub_bucket_index = 0; sub_bucket_index < r_sub_buckets_size; sub_bucket_index++) {
+                auto r_sub_bucket = r_sub_buckets[sub_bucket_index];
+                r_sub_bucket->bucket_depth = r_bucket->bucket_depth;
+                r_sub_bucket->buckets = 0;
+                int r_offset = sub_bucket_index * r_sub_elements;
 
-                int s_sub_buckets_size = max(1, (int)ceil(s_vector_size_limitation/s_size));
-                int r_sub_buckets_size = max(1, (int)ceil((r_size)/join_config.probe_config.max_r_elements));
-                int r_sub_size = r_size / r_sub_buckets_size;
-                int r_sub_decrement = r_sub_size;
-                int s_sub_size = s_size / s_sub_buckets_size;
-                int s_sub_decrement = s_sub_size;
+                if(sub_bucket_index < r_sub_buckets_size-1) {
+                    r_sub_bucket->table = db_table(r_offset, r_sub_elements, r_bucket->table);
+                    r_sub_bucket->hash_table = db_hash_table(r_offset, r_sub_elements, r_bucket->hash_table);
+                } else {
+                    r_sub_bucket->table = db_table(r_offset, r_bucket->table.size - r_offset, r_bucket->table);
+                    r_sub_bucket->hash_table = db_hash_table(r_offset, r_bucket->table.size - r_offset, r_bucket->hash_table);
+                }
+            }
 
-                BucketConfig * r_sub_buckets = new BucketConfig[s_sub_buckets_size * r_sub_buckets_size];
-                BucketConfig * s_sub_buckets = new BucketConfig[s_sub_buckets_size * r_sub_buckets_size];
+            // calculate remaining memory for s table in vector
+            int s_vector_size_limitation = join_config.vector_bytes_size - r_bytes;
+            int s_bytes = s_bucket->table.get_bytes() + s_bucket->hash_table.get_bytes();
+            if(s_bytes < s_vector_size_limitation) {
                 for(int r_sub_bucket_index = 0; r_sub_bucket_index < r_sub_buckets_size; r_sub_bucket_index++) {
-                    int r_offset = r_sub_decrement * r_sub_bucket_index;
-                    
-                    for(int s_sub_bucket_index = 0; s_sub_bucket_index < s_sub_buckets_size; s_sub_bucket_index++) {
-                        int s_offset = s_sub_decrement * s_sub_bucket_index;
-                        auto r_sub_bucket = &r_sub_buckets[r_sub_bucket_index * r_sub_buckets_size + s_sub_bucket_index];
-                        auto s_sub_bucket = &s_sub_buckets[r_sub_bucket_index * r_sub_buckets_size + s_sub_bucket_index];
-                        r_sub_bucket->bucket_depth = r_bucket->bucket_depth;
-                        r_sub_bucket->buckets = 0;
-                        r_sub_bucket->sub_buckets = nullptr;
-                        s_sub_bucket->bucket_depth = s_bucket->bucket_depth;
-                        s_sub_bucket->buckets = 0;
-                        s_sub_bucket->sub_buckets = nullptr;
+                    vectorized_buckets->push_back(std::make_pair(r_sub_buckets[r_sub_bucket_index], s_bucket));
+                }                
+            } else {
+                int s_sub_buckets_size = max(1, (int)ceil(s_vector_size_limitation/s_bytes));
+                int s_sub_elements = ceil((float)s_bucket->table.size / s_sub_buckets_size);
+                int s_sub_decrement = s_sub_elements;
 
-                        if(r_sub_bucket_index < s_sub_buckets_size-1) {
-                            r_sub_bucket->table = db_table(r_offset, r_sub_size, r_bucket->table);
-                            r_sub_bucket->hash_table = db_hash_table(r_offset, r_sub_size, r_bucket->hash_table);
-                        } else {
-                            r_sub_bucket->table = db_table(r_offset, r_bucket->table.size - r_offset, r_bucket->table);
-                            r_sub_bucket->hash_table = db_hash_table(r_offset, r_bucket->table.size - r_offset, r_bucket->hash_table);
-                        }
-                        
-                        
-                        if(s_sub_bucket_index < s_sub_buckets_size-1) {
-                            s_sub_bucket->table = db_table(s_offset, s_sub_size, s_bucket->table);
-                            s_sub_bucket->hash_table = db_hash_table(s_offset, s_sub_size, s_bucket->hash_table);
-                        } else {
-                            s_sub_bucket->table = db_table(s_offset, s_bucket->table.size - s_offset, s_bucket->table);
-                            s_sub_bucket->hash_table = db_hash_table(s_offset, s_bucket->table.size - s_offset, s_bucket->hash_table);
-                        }
-                        vectorized_buckets->push_back(std::make_pair(r_sub_bucket, s_sub_bucket));
+                std::vector<bucket_ptr> s_sub_buckets = std::vector<bucket_ptr>(s_sub_buckets_size);
+                for(int s_sub_bucket_index = 0; s_sub_bucket_index < s_sub_buckets_size; s_sub_bucket_index++) {
+                    int s_offset = s_sub_decrement * s_sub_bucket_index;
+                    auto s_sub_bucket = s_sub_buckets[s_sub_bucket_index];
+                    s_sub_bucket->bucket_depth = s_bucket->bucket_depth;
+                    s_sub_bucket->buckets = 0;                    
+                    
+                    if(s_sub_bucket_index < s_sub_buckets_size-1) {
+                        s_sub_bucket->table = db_table(s_offset, s_sub_elements, s_bucket->table);
+                        s_sub_bucket->hash_table = db_hash_table(s_offset, s_sub_elements, s_bucket->hash_table);
+                    } else {
+                        s_sub_bucket->table = db_table(s_offset, s_bucket->table.size - s_offset, s_bucket->table);
+                        s_sub_bucket->hash_table = db_hash_table(s_offset, s_bucket->table.size - s_offset, s_bucket->hash_table);
+                    }
+                }
+
+                for(int r_sub_bucket_index = 0; r_sub_bucket_index < r_sub_buckets_size; r_sub_bucket_index++) {                 
+                    for(int s_sub_bucket_index = 0; s_sub_bucket_index < s_sub_buckets_size; s_sub_bucket_index++) {
+                        vectorized_buckets->push_back(std::make_pair(r_sub_buckets[r_sub_bucket_index], s_sub_buckets[s_sub_bucket_index]));
                     }
                 }
             }
@@ -620,12 +593,11 @@ private:
 
     void probe(std::vector<bucket_pair_t> &bucket_pairs, int radix_width, DeviceConfig *device_config, std::vector<db_table> &joined_rs_tables)
     {
-
         std::sort(std::begin(bucket_pairs), std::end(bucket_pairs), bucket_pair_comparator());
         for (size_t bucket_pair_index = 0; bucket_pair_index < bucket_pairs.size(); bucket_pair_index++)
         {
-            BucketConfig *r_config = bucket_pairs[bucket_pair_index].first;
-            BucketConfig *s_config = bucket_pairs[bucket_pair_index].second;
+            bucket_ptr r_config = bucket_pairs[bucket_pair_index].first;
+            bucket_ptr s_config = bucket_pairs[bucket_pair_index].second;
 
             if (r_config->hash_table.size && s_config->hash_table.size)
             {
@@ -634,22 +606,12 @@ private:
 
                 int queue_index = device_config->get_next_queue_index();
                 ProbeConfig *probe_config = &device_config->stream_probe_configurations[queue_index];
+                probe_config->probe_mode = join_config.probe_config.probe_mode;
 
-                index_t total_r_elements = r_config->table.size;
-                index_t r_offset = 0;
-                while (total_r_elements > 0)
-                {
-                    db_table joined_rs_table;
-                    index_t elements_step = min((index_t)(*probe_config).max_r_elements, total_r_elements-r_offset);
-                    build_and_probe_gpu(db_table(r_offset, elements_step, r_config->table), db_hash_table(r_offset, elements_step, r_config->hash_table), s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
-                    total_r_elements -= elements_step;
-                    r_offset += elements_step;
-                    joined_rs_tables.push_back(joined_rs_table);
-                
-                    if((*probe_config).profiling_enabled) {
-                        join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
-                    }
-                }
+                db_table joined_rs_table;
+                build_and_probe_gpu(r_config->table, r_config->hash_table, s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
+                joined_rs_tables.push_back(joined_rs_table);
+                join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
             }
         }
     }
@@ -691,9 +653,14 @@ private:
 
     void merge_joined_tables(std::vector<db_table> &partial_rs_tables, db_table &joined_rs_table, DeviceConfig *device_config)
     {
+        if(partial_rs_tables.size() == 0) {
+            return;
+        }
+
         index_t merged_size = 0;
         std::for_each(std::begin(partial_rs_tables), std::end(partial_rs_tables), [&merged_size](const db_table &table)
                       { merged_size += table.size; });
+
 
         db_table table_properties = partial_rs_tables[0];
         joined_rs_table.column_count = table_properties.column_count;
@@ -709,14 +676,11 @@ private:
 
             for (auto table_it = partial_rs_tables.begin(); table_it != partial_rs_tables.end(); table_it++)
             {
-                for (int column_index = 0; column_index < joined_rs_table.column_count; column_index++)
-                {
-                    int stream_index = device_config->get_next_queue_index();
-                    cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset * 2], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
-                    cudaMemcpyAsync(&joined_rs_table.primary_keys[merge_offset], table_it->primary_keys, table_it->size * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
-                }
+                int stream_index = device_config->get_next_queue_index();
+                cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset * table_it->column_count], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
+                cudaMemcpyAsync(&joined_rs_table.primary_keys[merge_offset], table_it->primary_keys, table_it->size * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]);
                 merge_offset += table_it->size;
-                table_it->free(device_config->streams[device_config->get_next_queue_index()]);
+                //table_it->free(device_config->streams[stream_index]);
             }
         }
     }

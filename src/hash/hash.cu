@@ -1,8 +1,6 @@
 #pragma once
 #include "base/types.hpp"
 
-typedef uint1 chunk_t;
-
 struct HashSummary {
     std::string algorithm = "fnv";
     index_t elements = 0;

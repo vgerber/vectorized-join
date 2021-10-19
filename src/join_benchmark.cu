@@ -95,6 +95,7 @@ void store_join_summary(json &parent_json, JoinSummary summary, int id)
         probe_summary_json["r_elements"] = probe_summary.r_elements;
         probe_summary_json["s_elements"] = probe_summary.s_elements;
         probe_summary_json["rs_elements"] = probe_summary.rs_elements;
+        probe_summary_json["probe_mode"] = probe_summary.probe_mode;
         probe_summaries_json.push_back(probe_summary_json);
     }
     summary_json["probe_summaries"] = probe_summaries_json;
@@ -117,6 +118,8 @@ void verify(db_table expected, db_table actual)
         std::cout << "Table meta data not equal" << std::endl;
         exit(-1);
     }
+
+    
 
     int half_column_count = expected.column_count / 2;
     std::vector<column_t> tested_values;
@@ -153,7 +156,7 @@ void verify(db_table expected, db_table actual)
 
             if (expected_values != actual_values)
             {
-                std::cout << "Join on " << expected_test_value << " failed " << actual_values.size() - expected_values.size() << std::endl;
+                std::cout << "Join on " << expected_test_value << " failed " << (actual_values.size() - expected_values.size()) << std::endl;
                 exit(-1);
             }
         }
@@ -171,7 +174,7 @@ int main(int argc, char **argv)
     if (!load_benchmark_setup(std::string(argv[1]), std::string(argv[2]), &benchmark_setup))
     {
         std::cout << "Failed to load config" << std::endl;
-        return -1;
+        //return -1;
     }
 
     if (!benchmark_setup.has_join_setup)
@@ -216,6 +219,7 @@ int main(int argc, char **argv)
                     hash_config.threads_per_block = hash_benchmark_config.thread_size;
 
                     ProbeConfig probe_config;
+                    probe_config.probe_mode = probe_benchmark_config.probe_mode;
                     probe_config.build_n_per_thread = probe_benchmark_config.build_n_per_thread;
                     probe_config.build_table_load = probe_benchmark_config.build_table_load;
                     probe_config.build_threads = probe_benchmark_config.build_threads;
@@ -229,6 +233,7 @@ int main(int argc, char **argv)
                     join_config.tasks_p_device = benchmark_config.max_streams_p_gpu;
                     join_config.probe_config = probe_config;
                     join_config.hash_config = hash_config;
+                    join_config.vector_bytes_size = join_benchmark_config.vector_bytes_size;
                     JoinProvider join_provider(join_config);
 
                     JoinSummary total_join_summary;
@@ -258,9 +263,10 @@ int main(int argc, char **argv)
                             join_provider.join(r_table, s_table, rs_table);
                             store_join_summary(profile_json, join_provider.get_join_summary(), config_index);
 
+                            
+
                             db_table rs_expected_table;
                             join_provider.join(r_copy_table, s_copy_table, rs_expected_table);
-
                             //rs_table.print();
                             //std::cout << "====" << std::endl;
                             //s_expected_table.print();
