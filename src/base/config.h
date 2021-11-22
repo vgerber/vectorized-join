@@ -21,4 +21,8 @@
 #define PROBE_MODE 0
 #define EXTRACT_MODE 0
 
+// 32 or 64 bit unsigned int
+#define HASH_BITS 64
 
+// 8, 32, 64, 128 bit chunks
+#define HASH_CHUNK_BITS 64
