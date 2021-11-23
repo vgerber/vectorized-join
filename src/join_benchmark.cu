@@ -269,6 +269,7 @@ int main(int argc, char **argv) {
                         total_join_summary += join_provider.get_join_summary();
                     }
                     config_index++;
+                    std::cout << config_index << "/" << config_count << std::endl;
                     total_join_summary /= benchmark_config.runs;
 
                     JoinBenchmarkResults result;

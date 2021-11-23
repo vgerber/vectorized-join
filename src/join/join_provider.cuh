@@ -262,12 +262,10 @@ class JoinProvider {
 
         int max_radix_steps = (8 * sizeof(index_t)) / radix_width;
 
-        auto remaining_memory = get_memory_left().first;
         auto swap_memory = (r_table.get_bytes() + s_table.get_bytes() + (r_table.size + s_table.size) * 2 * sizeof(hash_t));
-        if (remaining_memory < swap_memory) {
+        if (out_of_memory(swap_memory)) {
             free_all();
-            float missing_memory_gb = ((int64_t)remaining_memory - swap_memory) / powf(10, 9);
-            auto swap_status = JoinStatus(false, "Not enough memory for swap tables and hashes " + std::to_string(missing_memory_gb) + "GB missing");
+            auto swap_status = JoinStatus(false, "Not enough memory for swap tables and hashes");
             join_summary.join_status = swap_status;
             return swap_status;
         }
@@ -681,7 +679,7 @@ class JoinProvider {
                 probe_config->probe_mode = join_config.probe_config.probe_mode;
 
                 int64_t required_probe_memory = (int64_t)get_probe_size(bucket_pairs[bucket_pair_index], *probe_config) - probe_config->get_allocated_memory();
-                if (required_probe_memory > 0 && get_memory_left().first < required_probe_memory) {
+                if (required_probe_memory > 0 && out_of_memory(required_probe_memory)) {
                     return JoinStatus(false, "Cannot allocate new memory for probing");
                 }
 
@@ -750,8 +748,7 @@ class JoinProvider {
         if (joined_rs_table.gpu) {
             // print_mem();
 
-            auto memory_free = get_memory_left().first;
-            if (memory_free < joined_rs_table.get_bytes()) {
+            if (out_of_memory(joined_rs_table.get_bytes())) {
                 return JoinStatus(false, "Not enough memory for full rs table (" + std::to_string(joined_rs_table.size) + " Rows)");
             }
 

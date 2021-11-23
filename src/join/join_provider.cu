@@ -256,12 +256,12 @@ std::pair<size_t, size_t> get_memory_left() {
     return std::make_pair(free_mem, total_mem);
 }
 
-bool hash_enough_memory(size_t required_memory) {
+bool out_of_memory(size_t required_memory) {
     size_t memory_left = get_memory_left().first;
     if (memory_left < required_memory) {
         return false;
     }
-    return (memory_left - required_memory) > MEMORY_TOLERANCE;
+    return (memory_left - required_memory) < MEMORY_TOLERANCE;
 }
 
 hash_t get_radix_mask(int bins) {
@@ -774,7 +774,7 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
 
     if (d_joined_rs_table.size > 0) {
         auto rs_table_memory = (d_joined_rs_table.column_count + 1) * d_joined_rs_table.size * sizeof(column_t);
-        if (!hash_enough_memory(rs_table_memory)) {
+        if (out_of_memory(rs_table_memory)) {
             return JoinStatus(false, "Not enough memory for rs table (" + std::to_string(d_joined_rs_table.size) + " Rows)");
         }
 
