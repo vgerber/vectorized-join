@@ -70,25 +70,6 @@ __global__ void primary_key_kernel(db_table table) {
     }
 }
 
-__global__ void generate_demo_data_kernel(index_t element_buffer_size, short int element_size, short int element_chunks, chunk_t *element_buffer) {
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = gridDim.x * blockDim.x;
-
-    for (index_t element_index = index; element_index < element_buffer_size; element_index += stride) {
-        index_t buffer_index = element_index * element_chunks;
-        for (short int chunk_index = 0; chunk_index < element_chunks; chunk_index++) {
-            chunk_t data_chunk;
-            data_chunk.x = element_index;
-            /*
-            data_chunk.y = element_index;
-            data_chunk.z = element_index;
-            data_chunk.w = element_index;
-            */
-            element_buffer[buffer_index + chunk_index] = data_chunk;
-        }
-    }
-}
-
 __global__ void generate_demo_data_kernel(index_t element_buffer_size, short int element_size, short int element_chunks, chunk_t *element_buffer, float *distribution_values) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
