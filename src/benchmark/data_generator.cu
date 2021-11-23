@@ -202,7 +202,6 @@ void generate_table_data(db_table &table, int max_value, float skew) {
         zipf_distribution_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant, d_zipf_distribution);
         zipf_kernel<<<max(1ULL, table.size * max_value / threads), threads>>>(table.size, table.column_values, d_distribution, d_zipf_distribution, max_value, skew);
 
-        gpuErrchk(cudaFree(d_distribution));
         gpuErrchk(cudaFree(d_zipf_constant));
         gpuErrchk(cudaFree(d_zipf_distribution));
     } else {
@@ -210,6 +209,7 @@ void generate_table_data(db_table &table, int max_value, float skew) {
         gpuErrchk(cudaDeviceSynchronize());
         gpuErrchk(cudaGetLastError());
     }
+    gpuErrchk(cudaFree(d_distribution));
 
     primary_key_kernel<<<max(table.size / 256, 1ULL), 256>>>(table);
     gpuErrchk(cudaDeviceSynchronize());
