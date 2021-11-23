@@ -2,5 +2,10 @@
 build/
 .idea
 remote/
-benchmark/profile/
-benchmark/
+benchmark/profile/probe
+benchmark/profile/hash/run*
+benchmark/src
+benchmark/run
+benchmark/local
+benchmark/images
+
