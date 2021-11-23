@@ -1,2 +1,11 @@
 .vscode/
 build/
+.idea
+remote/
+benchmark/profile/probe
+benchmark/profile/hash/run*
+benchmark/src
+benchmark/run
+benchmark/local
+benchmark/images
+

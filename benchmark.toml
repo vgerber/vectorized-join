@@ -1,0 +1,7 @@
+[test]
+elements = 10_000
+element_max = 1000
+rs_scale= 10.0
+runs = 10
+gpus = [ 1 ]
+output = "benchmark/local/test_run"
