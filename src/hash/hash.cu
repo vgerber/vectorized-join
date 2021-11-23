@@ -42,19 +42,19 @@ struct HashConfig {
 };
 
 __host__ __device__ constexpr hash_t get_fnv_prime() {
-    if (sizeof(hash_t) <= 4) {
-        return (uint32_t)(1 << 24) + (uint32_t)(1 << 8) + 0x93;
-    } else {
-        return (unsigned long long)(1ULL << 40) + (unsigned long long)(1 << 8) + 0xb3;
-    }
+#if HASH_BITS == 32
+    return (uint32_t)(1 << 24) + (uint32_t)(1 << 8) + 0x93;
+#elif HASH_BITS == 64
+    return (unsigned long long)(1ULL << 40) + (unsigned long long)(1 << 8) + 0xb3;
+#endif
 }
 
 __host__ __device__ constexpr hash_t get_fnv_offset() {
-    if (sizeof(hash_t) <= 4) {
-        return 2166136261;
-    } else {
-        return 14695981039346656037;
-    }
+#if HASH_BITS == 32
+    return 2166136261;
+#elif HASH_BITS == 64
+    return 14695981039346656037;
+#endif
 }
 
 __host__ __device__ constexpr unsigned short int get_max_shift() {
@@ -62,11 +62,11 @@ __host__ __device__ constexpr unsigned short int get_max_shift() {
 }
 
 __device__ inline hash_t reverse(hash_t hash) {
-    if (sizeof(hash_t) == 8) {
-        return __brevll((unsigned long long)hash);
-    } else {
-        return __brev((uint)hash);
-    }
+#if HASH_BITS == 64
+    return __brevll((unsigned long long)hash);
+#elif HASH_BITS == 32
+    return __brev((uint)hash);
+#endif
 }
 
 __device__ inline unsigned int permutate(unsigned int value, int shift) {

@@ -2,7 +2,6 @@
 #include "config.h"
 #include "debug.cuh"
 
-typedef unsigned long long hash_t;
 typedef unsigned long long index_t;
 typedef unsigned int index_s_t;
 typedef unsigned long long column_t;

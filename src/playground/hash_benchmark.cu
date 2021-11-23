@@ -424,7 +424,9 @@ int main(int argc, char *argv[]) {
                 return -1;
             }
 
-            std::cout << run_id + 1 << "/" << benchmark_configs.size() * hash_benchmark_configs.size() * benchmark_config.runs << std::endl;
+            if (!verbose) {
+                std::cout << run_id + 1 << "/" << benchmark_configs.size() * hash_benchmark_configs.size() * benchmark_config.runs << std::endl;
+            }
             run_id += benchmark_config.runs;
 
             if (!verbose) {
