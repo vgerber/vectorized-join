@@ -666,8 +666,6 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
         gpuErrchk(cudaMallocAsync(&config.d_probe_result_size, sizeof(index_s_t), config.stream));
     }
 
-    gpuErrchk(cudaStreamSynchronize(config.stream));
-    gpuErrchk(cudaGetLastError());
     gpuErrchk(cudaMemsetAsync(config.d_probe_result_size, 0, sizeof(index_s_t), config.stream));
 
     if (config.probe_mode == ProbeConfig::MODE_GLOBAL_R) {
@@ -695,32 +693,24 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
     assert(d_r_hash_table.size > 0);
     assert(d_s_hash_table.size > 0);
 
-    if (d_r_hash_table.size == 391 && d_s_hash_table.size == 12500) {
-        d_r_hash_table.print();
-        d_s_hash_table.print();
-    }
-
     /*
      * Build + Probe Kernels
      * Selects one by probe_mode
      */
     if (config.probe_mode == ProbeConfig::MODE_PARTITION_R) {
-        int full_hashtable_size = config.get_table_size(d_r_hash_table.size);
-        int block_factor = max(1.0f, ceil((float)full_hashtable_size / config.max_r_bytes));
-        int blocks = max(1.0f, ceil(d_r_hash_table.size / (float)(config.build_threads * config.build_n_per_thread))) * block_factor;
-        int block_elements = max(1.0f, ceil((float)d_r_hash_table.size / blocks));
-        slots = config.get_table_slots(block_elements);
-        int shared_mem = config.get_table_size(block_elements, slots);
+        int max_hash_table_size = min(config.get_max_table_elements(), (int)d_r_hash_table.size);
+        int max_block_elements = min(config.build_threads * config.build_n_per_thread, max_hash_table_size);
+
+        int blocks = max(1.0f, ceil((float)d_r_hash_table.size / max_block_elements));
+        slots = config.get_table_slots(max_block_elements);
+        int shared_mem = config.get_table_size(max_block_elements, slots);
         assert(blocks > 0);
         assert(shared_mem > 0);
         assert(config.build_threads > 0);
         assert(slots > 0);
-        assert(block_elements > 0);
-        // std::printf("%d %d\n", block_elements, shared_mem);
-        assert(shared_mem < 49000);
-        partial_build_and_probe_kernel<<<blocks, config.build_threads, shared_mem, config.stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots, block_elements);
-        gpuErrchk(cudaStreamSynchronize(config.stream));
-        gpuErrchk(cudaGetLastError());
+        assert(max_block_elements > 0);
+        assert(shared_mem < 48000);
+        partial_build_and_probe_kernel<<<blocks, config.build_threads, shared_mem, config.stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots, max_block_elements);
     } else if (config.probe_mode == ProbeConfig::MODE_PARTITION_S) {
         int blocks = ceil(d_s_hash_table.size / (float)(config.build_threads * config.build_n_per_thread));
         int shared_mem = config.get_table_size(d_r_hash_table.size, slots);
@@ -730,7 +720,7 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
         assert(config.build_threads > 0);
         assert(shared_mem > 0);
         assert(config.build_threads > 0);
-        assert(shared_mem < 49000);
+        assert(shared_mem < 48000);
         build_and_partial_probe_kernel<<<blocks, config.build_threads, shared_mem, config.stream>>>(d_r_table, d_r_hash_table, d_s_table, d_s_hash_table, config.d_probe_result_size, config.d_probe_buffer, key_offset, slots);
     } else if (config.probe_mode == ProbeConfig::MODE_GLOBAL_R) {
         gpuErrchk(cudaMemsetAsync(config.d_table_slots, 0, sizeof(index_s_t) * config.max_table_slots, config.stream));
@@ -770,7 +760,7 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
     d_joined_rs_table.data_owner = true;
     gpuErrchk(cudaMemcpyAsync(&d_joined_rs_table.size, config.d_probe_result_size, sizeof(index_s_t), cudaMemcpyDeviceToHost, config.stream));
     gpuErrchk(cudaStreamSynchronize(config.stream));
-    gpuErrchk(cudaGetLastError());
+    // gpuErrchk(cudaGetLastError());
 
     if (d_joined_rs_table.size > 0) {
         auto rs_table_memory = (d_joined_rs_table.column_count + 1) * d_joined_rs_table.size * sizeof(column_t);
@@ -805,8 +795,10 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
         }
     }
 
-    config.profiling_summary.r_elements = d_r_table.size;
-    config.profiling_summary.s_elements = d_s_table.size;
-    config.profiling_summary.rs_elements = d_joined_rs_table.size;
+    if (config.profiling_enabled) {
+        config.profiling_summary.r_elements = d_r_table.size;
+        config.profiling_summary.s_elements = d_s_table.size;
+        config.profiling_summary.rs_elements = d_joined_rs_table.size;
+    }
     return JoinStatus(true);
 }
