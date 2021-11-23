@@ -79,6 +79,7 @@ struct JoinSummary {
         join_tuples_p_second += js.join_tuples_p_second;
         join_gb_p_second += js.join_gb_p_second;
         rs_elements += js.rs_elements;
+        join_status = js.join_status;
         return *this;
     }
 
@@ -197,7 +198,8 @@ class JoinProvider {
         } else if (r_table.gpu && s_table.gpu) {
             return join_gpu(r_table, s_table, joined_rs_table);
         }
-        return JoinStatus(false, "Unable to figure out the join algrithm");
+        join_summary.join_status = JoinStatus(false, "Unable to figure out the join algorithm");
+        return join_summary.join_status;
     }
 
     JoinStatus join_cpu(db_table r_table, db_table s_table, db_table &joined_rs_table) {
@@ -225,7 +227,6 @@ class JoinProvider {
         // join
         // allocated rs table based on matching results
         joined_rs_table = db_table(2, matched_tuples, false);
-        int rs_half_column_count = joined_rs_table.column_count / 2;
 
         // build rs table from matching results
         index_t rs_index = 0;
