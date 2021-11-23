@@ -690,7 +690,10 @@ class JoinProvider {
                 }
 
                 joined_rs_tables.push_back(joined_rs_table);
-                join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
+
+                if (device_config->profile_enabled) {
+                    join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
+                }
             }
         }
         return JoinStatus(true);
