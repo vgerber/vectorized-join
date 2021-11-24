@@ -282,14 +282,14 @@ class JoinProvider {
         auto hash_start = std::chrono::high_resolution_clock::now();
 
         auto hash_status = hash_table(r_table, r_hash_table, devices[0], join_config.hash_config);
-        if (hash_status.hash_failed()) {
+        if (hash_status.has_failed()) {
             free_all();
             join_summary.join_status = hash_status;
             return hash_status;
         }
 
         hash_status = hash_table(s_table, s_hash_table, devices[0], join_config.hash_config);
-        if (hash_status.hash_failed()) {
+        if (hash_status.has_failed()) {
             free_all();
             join_summary.join_status = hash_status;
             return hash_status;
@@ -324,7 +324,7 @@ class JoinProvider {
 
         auto probe_start = std::chrono::high_resolution_clock::now();
         auto probe_status = probe(bucket_pairs, radix_width, devices[0], joined_rs_tables);
-        if (probe_status.hash_failed()) {
+        if (probe_status.has_failed()) {
             free_all();
             join_summary.join_status = probe_status;
             return probe_status;
@@ -352,7 +352,7 @@ class JoinProvider {
 
         auto merge_start = std::chrono::high_resolution_clock::now();
         auto merge_status = merge_joined_tables(joined_rs_tables, joined_rs_table, devices[0]);
-        if (merge_status.hash_failed()) {
+        if (merge_status.has_failed()) {
             free_all();
             join_summary.join_status = merge_status;
             return merge_status;
@@ -686,7 +686,7 @@ class JoinProvider {
 
                 db_table joined_rs_table;
                 auto probe_status = build_and_probe_gpu(r_config->table, r_config->hash_table, s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
-                if (probe_status.hash_failed()) {
+                if (probe_status.has_failed()) {
                     return probe_status;
                 }
 
@@ -758,6 +758,8 @@ class JoinProvider {
 
             gpuErrchk(cudaMalloc(&joined_rs_table.column_values, joined_rs_table.column_count * joined_rs_table.size * sizeof(column_t)));
             gpuErrchk(cudaMalloc(&joined_rs_table.primary_keys, joined_rs_table.size * sizeof(column_t)));
+
+            generate_primary_key_kernel<<<joined_rs_table.size / 256, 256, 0, device_config->streams[device_config->get_next_queue_index()]>>>(joined_rs_table);
 
             for (auto table_it = partial_rs_tables.begin(); table_it != partial_rs_tables.end(); table_it++) {
                 int stream_index = device_config->get_next_queue_index();

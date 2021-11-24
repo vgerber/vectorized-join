@@ -29,7 +29,7 @@ struct JoinStatus {
         return successful;
     }
 
-    bool hash_failed() {
+    bool has_failed() {
         return !successful;
     }
 };
@@ -266,6 +266,14 @@ bool out_of_memory(size_t required_memory) {
 
 hash_t get_radix_mask(int bins) {
     return bins - 1;
+}
+
+__global__ void generate_primary_key_kernel(db_table table) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+    for (int element_index = index; element_index < table.size; element_index += stride) {
+        table.primary_keys[element_index] = element_index + 1;
+    }
 }
 
 __global__ void histogram_kernel(index_t buffer_size, hash_t *hash_buffer, int bins, index_t *histogram, int radix_shift, hash_t radix_mask) {

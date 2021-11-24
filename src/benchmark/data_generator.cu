@@ -54,11 +54,12 @@ __global__ void zipf_kernel(int elements, column_t *element_buffer, float *unifo
     }
 }
 
-__global__ void uniform_kernel(int elements, column_t *element_buffer, float *uniform_values, column_t max_value) {
+__global__ void uniform_kernel(int elements, column_t *element_buffer, float *uniform_values, column_t value_offset, column_t value_max) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
     for (int value_index = index; value_index < elements; value_index += stride) {
-        element_buffer[value_index] = uniform_values[value_index] * max_value;
+        column_t value = uniform_values[value_index] * (value_max - value_offset);
+        element_buffer[value_index] = value_offset + value;
     }
 }
 
@@ -74,24 +75,20 @@ __global__ void generate_demo_data_kernel(index_t element_buffer_size, short int
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
 
-    for (index_t element_index = index; element_index < element_buffer_size; element_index += stride) {
-        index_t buffer_index = element_index * element_chunks;
-        for (int chunk_index = 0; chunk_index < element_chunks; chunk_index++) {
-
+    for (index_t element_index = index; element_index < element_buffer_size * element_chunks; element_index += stride) {
 #if HASH_CHUNK_BITS == 8
-            element_buffer[buffer_index + chunk_index] = fabsf(distribution_values[buffer_index + chunk_index]) * CHAR_MAX;
+        element_buffer[element_index] = fabsf(distribution_values[element_index]) * CHAR_MAX;
 #endif
 #if HASH_CHUNK_BITS >= 32
-            element_buffer[buffer_index + chunk_index].x = fabsf(distribution_values[buffer_index + chunk_index]) * UINT32_MAX;
+        element_buffer[element_index].x = fabsf(distribution_values[element_index]) * UINT32_MAX;
 #endif
 #if HASH_CHUNK_BITS >= 64
-            element_buffer[buffer_index + chunk_index].y = fabsf(distribution_values[buffer_index + chunk_index]) * UINT32_MAX;
+        element_buffer[element_index].y = fabsf(distribution_values[element_index]) * UINT32_MAX;
 #endif
 #if HASH_CHUNK_BITS >= 128
-            element_buffer[buffer_index + chunk_index].z = fabsf(distribution_values[buffer_index + chunk_index]) * UINT32_MAX;
-            element_buffer[buffer_index + chunk_index].w = fabsf(distribution_values[buffer_index + chunk_index]) * UINT32_MAX;
+        element_buffer[element_index].z = fabsf(distribution_values[element_index]) * UINT32_MAX;
+        element_buffer[element_index].w = fabsf(distribution_values[element_index]) * UINT32_MAX;
 #endif
-        }
     }
 }
 
@@ -141,7 +138,7 @@ void generate_demo_data(index_t elements, short int element_size, short int *ele
 #endif
 }
 
-void generate_table_data(db_table &table, int max_value, float skew) {
+void generate_table_data(db_table &table, column_t value_offset, column_t value_max, float skew) {
     gpuErrchk(cudaMalloc(&table.primary_keys, table.size * sizeof(column_t)));
     gpuErrchk(cudaMalloc(&table.column_values, table.size * table.column_count * sizeof(column_t)));
     gpuErrchk(cudaGetLastError());
@@ -176,17 +173,17 @@ void generate_table_data(db_table &table, int max_value, float skew) {
         float *d_zipf_distribution = nullptr;
         gpuErrchk(cudaMalloc(&d_zipf_constant, sizeof(float)));
         gpuErrchk(cudaMemset(d_zipf_constant, 0, sizeof(float)));
-        gpuErrchk(cudaMalloc(&d_zipf_distribution, max_value * sizeof(float)));
+        gpuErrchk(cudaMalloc(&d_zipf_distribution, value_max * sizeof(float)));
 
         int threads = 256;
-        zipf_constant_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant);
-        zipf_distribution_kernel<<<max(1, max_value / threads), threads>>>(max_value, skew, d_zipf_constant, d_zipf_distribution);
-        zipf_kernel<<<max(1ULL, table.size * max_value / threads), threads>>>(table.size, table.column_values, d_distribution, d_zipf_distribution, max_value, skew);
+        zipf_constant_kernel<<<max((column_t)1, value_max / threads), threads>>>(value_max, skew, d_zipf_constant);
+        zipf_distribution_kernel<<<max((column_t)1, value_max / threads), threads>>>(value_max, skew, d_zipf_constant, d_zipf_distribution);
+        zipf_kernel<<<max(1ULL, table.size * value_max / threads), threads>>>(table.size, table.column_values, d_distribution, d_zipf_distribution, value_max, skew);
 
         gpuErrchk(cudaFree(d_zipf_constant));
         gpuErrchk(cudaFree(d_zipf_distribution));
     } else {
-        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_values, d_distribution, max_value);
+        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_values, d_distribution, value_offset, value_max);
         gpuErrchk(cudaDeviceSynchronize());
         gpuErrchk(cudaGetLastError());
     }
@@ -197,13 +194,13 @@ void generate_table_data(db_table &table, int max_value, float skew) {
     gpuErrchk(cudaGetLastError());
 }
 
-void generate_table(index_t table_size, int column_count, db_table &table_data, int max_value, float skew) {
+void generate_table(index_t table_size, int column_count, db_table &table_data, column_t value_offset, column_t value_max, float skew) {
     // +1 = primary key column
     table_data.column_count = column_count;
     table_data.gpu = true;
     table_data.size = table_size;
     table_data.data_owner = true;
 
-    generate_table_data(table_data, max_value, skew);
+    generate_table_data(table_data, value_offset, value_max, skew);
     gpuErrchk(cudaDeviceSynchronize());
 }

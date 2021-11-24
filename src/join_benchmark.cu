@@ -223,8 +223,8 @@ int main(int argc, char **argv) {
                         db_table rs_table;
 
                         gpuErrchk(cudaGetLastError());
-                        generate_table(r_table_size, column_count, r_table, benchmark_config.max_value, benchmark_config.skew);
-                        generate_table(s_table_size, column_count, s_table, benchmark_config.max_value, benchmark_config.skew);
+                        generate_table(r_table_size, column_count, r_table, 0, benchmark_config.max_value, benchmark_config.skew);
+                        generate_table(s_table_size, column_count, s_table, 0, benchmark_config.max_value, benchmark_config.skew);
                         gpuErrchk(cudaGetLastError());
                         // r_table.print();
                         // s_table.print();
@@ -236,7 +236,7 @@ int main(int argc, char **argv) {
 
                             auto join_status = join_provider.join(r_table, s_table, rs_table);
                             store_join_summary(profile_json, join_provider.get_join_summary(), config_index);
-                            if (join_status.hash_failed()) {
+                            if (join_status.has_failed()) {
                                 std::cout << "Join failed " << join_status.message << std::endl;
                             } else {
 
@@ -255,7 +255,7 @@ int main(int argc, char **argv) {
                         } else {
                             auto join_status = join_provider.join(r_table, s_table, rs_table);
                             store_join_summary(profile_json, join_provider.get_join_summary(), config_index);
-                            if (join_status.hash_failed()) {
+                            if (join_status.has_failed()) {
                                 std::cout << "Join failed " << join_status.message << std::endl;
                             }
                         }
