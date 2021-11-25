@@ -210,6 +210,8 @@ int main(int argc, char **argv) {
 
                     print_mem();
                     JoinSummary total_join_summary;
+
+                    column_t max_value = benchmark_config.max_value;
                     for (int run_index = 0; run_index < benchmark_config.runs; run_index++) {
                         JoinProvider join_provider(join_config);
                         // std::cout << "C " << config_index << "/" << config_count << " "
@@ -223,8 +225,7 @@ int main(int argc, char **argv) {
                         db_table rs_table;
 
                         gpuErrchk(cudaGetLastError());
-                        generate_table(r_table_size, column_count, r_table, 0, benchmark_config.max_value, benchmark_config.skew);
-                        generate_table(s_table_size, column_count, s_table, 0, benchmark_config.max_value, benchmark_config.skew);
+                        generate_tables(r_table_size, s_table_size, column_count, r_table, s_table, max_value, benchmark_config.skew, benchmark_config.distribution);
                         gpuErrchk(cudaGetLastError());
                         // r_table.print();
                         // s_table.print();
@@ -273,6 +274,7 @@ int main(int argc, char **argv) {
                     total_join_summary /= benchmark_config.runs;
 
                     JoinBenchmarkResults result;
+                    benchmark_config.max_column_value = max_value;
                     result.benchmark_config = benchmark_config;
                     result.join_config = join_benchmark_config;
                     result.probe_config = probe_benchmark_config;

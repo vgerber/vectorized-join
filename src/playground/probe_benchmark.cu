@@ -37,6 +37,7 @@ void store_probe_summary(json &parent_json, ProbeSummary probe_summary) {
     probe_summary_json["r_elements"] = probe_summary.r_elements;
     probe_summary_json["s_elements"] = probe_summary.s_elements;
     probe_summary_json["rs_elements"] = probe_summary.rs_elements;
+    probe_summary_json["probe_mode"] = probe_summary.probe_mode;
     parent_json.push_back(probe_summary_json);
 }
 
@@ -101,11 +102,9 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            column_t max_column_value = benchmark_config.max_value;
             for (int stream_index = 0; stream_index < stream_count; stream_index++) {
-
-                generate_table(r_table_size, column_count, r_tables[stream_index], 0, benchmark_config.max_value, benchmark_config.skew);
-                // r_tables[stream_index].print();
-                generate_table(s_table_size, column_count, s_tables[stream_index], 0, benchmark_config.max_value, benchmark_config.skew);
+                generate_tables(r_table_size, s_table_size, column_count, r_tables[stream_index], s_tables[stream_index], max_column_value, benchmark_config.skew, benchmark_config.distribution);
 
                 hash_config.stream = streams[stream_index];
                 r_hash_tables[stream_index] = db_hash_table(r_tables[stream_index].size, r_tables[stream_index].gpu);
@@ -175,6 +174,9 @@ int main(int argc, char **argv) {
                 probe_config.free();
 
                 if (latest_join_status.is_successful()) {
+                    // max value might be clamped by zipf distribution
+                    benchmark_config.max_column_value = max_column_value;
+
                     best_result.benchmark_config = benchmark_config;
                     best_result.probe_config = probe_benchmark_config;
                     best_result.join_config = join_benchmark_config;

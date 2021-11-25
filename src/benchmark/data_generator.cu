@@ -12,6 +12,9 @@
 static std::vector<curandGenerator_t> rand_gens;
 #endif
 
+static std::string DIST_UNIFORM = "uniform";
+static std::string DIST_ZIPF = "zipf";
+
 __global__ void zipf_constant_kernel(int max_rank, float skew, float *zipf_constant) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
@@ -138,7 +141,7 @@ void generate_demo_data(index_t elements, short int element_size, short int *ele
 #endif
 }
 
-void generate_table_data(db_table &table, column_t value_offset, column_t value_max, float skew) {
+void generate_table_data(db_table &table, column_t value_max, float skew, std::string distribution) {
     gpuErrchk(cudaMalloc(&table.primary_keys, table.size * sizeof(column_t)));
     gpuErrchk(cudaMalloc(&table.column_values, table.size * table.column_count * sizeof(column_t)));
     gpuErrchk(cudaGetLastError());
@@ -164,11 +167,8 @@ void generate_table_data(db_table &table, column_t value_offset, column_t value_
     }
 
     gpuErrchk(curandGenerateUniform(rand_gen, d_distribution, distribution_values_count));
-    // gpuErrchk(curandDestroyGenerator(rand_gen));
-    gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaGetLastError());
 
-    if (skew > 0.0f) {
+    if (distribution == DIST_ZIPF) {
         float *d_zipf_constant = nullptr;
         float *d_zipf_distribution = nullptr;
         gpuErrchk(cudaMalloc(&d_zipf_constant, sizeof(float)));
@@ -182,25 +182,46 @@ void generate_table_data(db_table &table, column_t value_offset, column_t value_
 
         gpuErrchk(cudaFree(d_zipf_constant));
         gpuErrchk(cudaFree(d_zipf_distribution));
-    } else {
-        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_values, d_distribution, value_offset, value_max);
-        gpuErrchk(cudaDeviceSynchronize());
-        gpuErrchk(cudaGetLastError());
+    } else if (distribution == DIST_UNIFORM) {
+        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_values, d_distribution, ceil(skew * value_max), value_max);
     }
     gpuErrchk(cudaFree(d_distribution));
 
     primary_key_kernel<<<max(table.size / 256, 1ULL), 256>>>(table);
-    gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaGetLastError());
 }
 
-void generate_table(index_t table_size, int column_count, db_table &table_data, column_t value_offset, column_t value_max, float skew) {
+void generate_table(index_t table_size, int column_count, db_table &table_data, column_t value_offset, column_t value_max, float skew, std::string distribution) {
     // +1 = primary key column
     table_data.column_count = column_count;
     table_data.gpu = true;
     table_data.size = table_size;
     table_data.data_owner = true;
 
-    generate_table_data(table_data, value_offset, value_max, skew);
+    generate_table_data(table_data, value_max, skew, distribution);
+    gpuErrchk(cudaDeviceSynchronize());
+}
+
+void generate_tables(index_t r_table_size, index_t s_table_size, int column_count, db_table &r_table_data, db_table &s_table_data, column_t &value_max, float skew, std::string distribution) {
+    // +1 = primary key column
+    r_table_data.column_count = column_count;
+    r_table_data.gpu = true;
+    r_table_data.size = r_table_size;
+    r_table_data.data_owner = true;
+
+    s_table_data.column_count = column_count;
+    s_table_data.gpu = true;
+    s_table_data.size = s_table_size;
+    s_table_data.data_owner = true;
+
+    if (distribution == DIST_UNIFORM) {
+        generate_table_data(r_table_data, value_max, 0.0f, distribution);
+        generate_table_data(s_table_data, value_max, skew, distribution);
+    } else if (distribution == DIST_ZIPF) {
+        // limit zipf for performance
+        value_max = min((column_t)10000, value_max);
+        generate_table_data(r_table_data, value_max, skew, distribution);
+        generate_table_data(s_table_data, value_max, 0.0f, DIST_UNIFORM);
+    }
+
     gpuErrchk(cudaDeviceSynchronize());
 }
