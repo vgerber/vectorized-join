@@ -95,12 +95,12 @@ struct db_hash_table {
         return sizeof(hash_t) * size;
     }
 
-    db_hash_table copyAsync(int device_index = 0, cudaStream_t stream = 0) {
+    db_hash_table peerCopyAsync(int device_index = 0, cudaStream_t stream = 0) {
         db_hash_table copy_table;
         copy_table.device_index = device_index;
         gpuErrchk(cudaSetDevice(device_index));
         gpuErrchk(cudaMallocAsync(&copy_table.hashes, size * sizeof(hash_t), stream));
-        gpuErrchk(cudaMemcpyAsync(copy_table.hashes, hashes, size * sizeof(hash_t), cudaMemcpyDeviceToDevice, stream));
+        gpuErrchk(cudaMemcpyPeerAsync(copy_table.hashes, device_index, hashes, this->device_index, size * sizeof(hash_t), stream));
         copy_table.data_owner = true;
         copy_table.gpu = true;
         copy_table.size = size;
@@ -166,23 +166,19 @@ struct db_table {
         this->primary_keys = &table_source.primary_keys[offset];
     }
 
-    db_table copyAsync(int device_index, cudaStream_t stream = 0) {
-        if (gpu) {
-            db_table table_copy;
-            table_copy.column_count = column_count;
-            table_copy.gpu = true;
-            table_copy.data_owner = true;
-            table_copy.size = size;
-            table_copy.device_index = device_index;
-            gpuErrchk(cudaSetDevice(device_index));
-            gpuErrchk(cudaMallocAsync(&table_copy.column_values, table_copy.size * table_copy.column_count * sizeof(column_t), stream));
-            gpuErrchk(cudaMallocAsync(&table_copy.primary_keys, table_copy.size * sizeof(column_t), stream));
-            gpuErrchk(cudaMemcpyAsync(table_copy.column_values, column_values, table_copy.size * table_copy.column_count * sizeof(column_t), cudaMemcpyDeviceToDevice));
-            gpuErrchk(cudaMemcpyAsync(table_copy.primary_keys, primary_keys, table_copy.size * sizeof(column_t), cudaMemcpyDeviceToDevice));
-            return table_copy;
-        } else {
-            return copy(false);
-        }
+    db_table peerCopyAsync(int device_index, cudaStream_t stream = 0) {
+        db_table table_copy;
+        table_copy.column_count = column_count;
+        table_copy.gpu = true;
+        table_copy.data_owner = true;
+        table_copy.size = size;
+        table_copy.device_index = device_index;
+        gpuErrchk(cudaSetDevice(device_index));
+        gpuErrchk(cudaMallocAsync(&table_copy.column_values, table_copy.size * table_copy.column_count * sizeof(column_t), stream));
+        gpuErrchk(cudaMallocAsync(&table_copy.primary_keys, table_copy.size * sizeof(column_t), stream));
+        gpuErrchk(cudaMemcpyPeerAsync(table_copy.column_values, device_index, column_values, this->device_index, table_copy.size * table_copy.column_count * sizeof(column_t), stream));
+        gpuErrchk(cudaMemcpyPeerAsync(table_copy.primary_keys, device_index, primary_keys, this->device_index, table_copy.size * sizeof(column_t), stream));
+        return table_copy;
     }
 
     db_table copy(bool to_gpu) {

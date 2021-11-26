@@ -209,15 +209,15 @@ HashBenchmarkResult hash_shared_gpu(BenchmarkConfig benchmark_config, HashBenchm
                 }
             }
 
-            cudaStreamCreate(&device_stream[gpu_index]);
+            gpuErrchk(cudaStreamCreate(&device_stream[gpu_index]));
             if (gpu_index > 0) {
                 for (int mem_event_index = 0; mem_event_index < mem_event_count; mem_event_index++) {
-                    cudaEventCreate(&mem_events[(gpu_index - 1) * mem_event_count + mem_event_index]);
+                    gpuErrchk(cudaEventCreate(&mem_events[(gpu_index - 1) * mem_event_count + mem_event_index]));
                 }
             }
 
             for (int hash_event_index = 0; hash_event_index < hash_event_count; hash_event_index++) {
-                cudaEventCreate(&hash_events[gpu_index * hash_event_count + hash_event_index]);
+                gpuErrchk(cudaEventCreate(&hash_events[gpu_index * hash_event_count + hash_event_index]));
             }
 
             buffer_offsets[gpu_index] = buffer_offset;
@@ -251,7 +251,7 @@ HashBenchmarkResult hash_shared_gpu(BenchmarkConfig benchmark_config, HashBenchm
             if (gpu_index > 0) {
                 gpuErrchk(cudaEventRecord(mem_events[mem_event_offset], device_stream[gpu_index]));
                 chunk_t *master_element_buffer = &(d_element_buffers[0][buffer_offsets[gpu_index] * element_chunks]);
-                gpuErrchk(cudaMemcpyAsync(d_element_buffers[gpu_index], master_element_buffer, buffer_sizes[gpu_index] * element_chunks * sizeof(chunk_t), cudaMemcpyDeviceToDevice, device_stream[gpu_index]));
+                gpuErrchk(cudaMemcpyPeerAsync(d_element_buffers[gpu_index], gpu_index, master_element_buffer, 0, buffer_sizes[gpu_index] * element_chunks * sizeof(chunk_t), device_stream[gpu_index]));
                 gpuErrchk(cudaEventRecord(mem_events[mem_event_offset + 1], device_stream[gpu_index]));
             }
 
@@ -265,7 +265,7 @@ HashBenchmarkResult hash_shared_gpu(BenchmarkConfig benchmark_config, HashBenchm
             if (gpu_index > 0) {
                 gpuErrchk(cudaEventRecord(mem_events[mem_event_offset + 2], device_stream[gpu_index]));
                 hash_t *master_hash_buffer = &(d_hashed_buffers[0][buffer_offsets[gpu_index]]);
-                gpuErrchk(cudaMemcpyAsync(master_hash_buffer, d_hashed_buffers[gpu_index], buffer_sizes[gpu_index] * sizeof(hash_t), cudaMemcpyDeviceToDevice, device_stream[gpu_index]));
+                gpuErrchk(cudaMemcpyPeerAsync(master_hash_buffer, 0, d_hashed_buffers[gpu_index], gpu_index, buffer_sizes[gpu_index] * sizeof(hash_t), device_stream[gpu_index]));
                 gpuErrchk(cudaEventRecord(mem_events[mem_event_offset + 3], device_stream[gpu_index]));
             }
         }

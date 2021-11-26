@@ -483,11 +483,17 @@ class JoinProvider {
     }
 
     void configure_devices() {
-        for (int device_index = 0; device_index < devices.size(); device_index++) {
+        for (int device_index = 0; device_index < join_config.devices; device_index++) {
             auto device_config = std::make_shared<DeviceConfig>();
             device_config->device_id = device_index;
             device_config->profile_enabled = join_config.profile_enabled;
-            cudaSetDevice(device_config->device_id);
+            gpuErrchk(cudaSetDevice(device_config->device_id));
+
+            for (int peer_gpu_index = 0; peer_gpu_index < join_config.devices; peer_gpu_index++) {
+                if (peer_gpu_index != device_index) {
+                    gpuErrchk(cudaDeviceEnablePeerAccess(peer_gpu_index, 0));
+                }
+            }
 
             device_config->memory_left = get_memory_left().first;
             for (int stream_index = 0; stream_index < join_config.tasks_p_device; stream_index++) {
@@ -610,20 +616,20 @@ class JoinProvider {
 
                         // start a new stream for each copy operation to improve latency
                         // copy r table to new device
-                        r_sub_bucket->table = r_sub_bucket->table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
-                        r_sub_bucket->hash_table = r_sub_bucket->hash_table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        r_sub_bucket->table = r_sub_bucket->table.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        r_sub_bucket->hash_table = r_sub_bucket->hash_table.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
 
                         // copy s table to new device
-                        s_sub_bucket->table = s_sub_bucket->table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
-                        s_sub_bucket->hash_table = s_sub_bucket->hash_table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        s_sub_bucket->table = s_sub_bucket->table.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        s_sub_bucket->hash_table = s_sub_bucket->hash_table.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
 
                         // copy swap for r to new device
-                        sub_r_table_swap = sub_r_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
-                        sub_r_hash_table_swap = sub_r_hash_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        sub_r_table_swap = sub_r_table_swap.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        sub_r_hash_table_swap = sub_r_hash_table_swap.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
 
                         // copy swap for s to new device
-                        sub_r_table_swap = sub_r_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
-                        sub_r_hash_table_swap = sub_r_hash_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        sub_r_table_swap = sub_r_table_swap.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        sub_r_hash_table_swap = sub_r_hash_table_swap.peerCopyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
                     }
                 }
 
@@ -756,11 +762,11 @@ class JoinProvider {
 
                             device_config = devices[device_index];
 
-                            r_config->table = r_config->table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
-                            r_config->hash_table = r_config->hash_table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+                            r_config->table = r_config->table.peerCopyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+                            r_config->hash_table = r_config->hash_table.peerCopyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
 
-                            s_config->table = s_config->table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
-                            s_config->hash_table = s_config->hash_table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+                            s_config->table = s_config->table.peerCopyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+                            s_config->hash_table = s_config->hash_table.peerCopyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
 
                             device_config->synchronize_device();
                         }
