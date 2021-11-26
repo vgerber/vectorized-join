@@ -123,6 +123,7 @@ struct JoinConfig {
 
 struct DeviceConfig {
     int device_id = 0;
+    std::vector<int> peers;
 
     std::vector<std::shared_ptr<std::mutex>> stream_locks;
     std::vector<cudaStream_t> streams;
@@ -156,6 +157,7 @@ struct DeviceConfig {
     }
 
     void free() {
+        set_device();
         for (int probe_config_index = 0; probe_config_index < stream_probe_configurations.size(); probe_config_index++) {
             cudaStream_t stream = streams[probe_config_index];
         }
@@ -181,6 +183,11 @@ struct DeviceConfig {
             partition_config.free();
         }
         stream_partition_configurations.clear();
+
+        for (auto peer_index : peers) {
+            gpuErrchk(cudaDeviceDisablePeerAccess(peer_index));
+        }
+        peers.clear();
     }
 
     int get_next_queue_index() {
@@ -490,8 +497,11 @@ class JoinProvider {
             gpuErrchk(cudaSetDevice(device_config->device_id));
 
             for (int peer_gpu_index = 0; peer_gpu_index < join_config.devices; peer_gpu_index++) {
-                if (peer_gpu_index != device_index) {
+                int canAccessPeer;
+                gpuErrchk(cudaDeviceCanAccessPeer(&canAccessPeer, device_config->device_id, peer_gpu_index));
+                if (canAccessPeer && peer_gpu_index != device_index) {
                     gpuErrchk(cudaDeviceEnablePeerAccess(peer_gpu_index, 0));
+                    device_config->peers.push_back(peer_gpu_index);
                 }
             }
 
