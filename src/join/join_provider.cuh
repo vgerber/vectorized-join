@@ -8,6 +8,7 @@
 #include "join_provider.cu"
 
 struct BucketConfig {
+    int device_index = 0;
     int buckets = 0;
     int bucket_depth = 0;
     std::vector<std::shared_ptr<BucketConfig>> sub_buckets;
@@ -22,7 +23,7 @@ struct BucketConfig {
     }
 
     void print() {
-        std::cout << std::string(bucket_depth, '-') << hash_table.size << std::endl;
+        std::cout << std::string(bucket_depth, '-') << device_index << ":" << hash_table.size << std::endl;
         if (sub_buckets.size() > 0) {
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++) {
                 sub_buckets[bucket_index]->print();
@@ -104,11 +105,15 @@ struct JoinSummary {
 };
 
 struct JoinConfig {
+    static const int MODE_RADIX_SPLIT = 0;
+    static const int MODE_VECTOR_SPLIT = 1;
+
     int tasks_p_device = 1;
     int devices = 1;
     bool profile_enabled = true;
     bool vectorize = false;
     int vector_bytes_size = 0;
+    int join_mode = MODE_RADIX_SPLIT;
     int buckets = 2;
 
     HashConfig hash_config;
@@ -124,8 +129,24 @@ struct DeviceConfig {
     std::vector<ProbeConfig> stream_probe_configurations;
     std::vector<PartitionConfig> stream_partition_configurations;
 
+    std::mutex device_lock;
+
     bool profile_enabled = false;
     std::vector<cudaEvent_t> profiling_events;
+
+    size_t memory_left = 0;
+
+    void reserve_memory(size_t bytes) {
+        memory_left -= bytes;
+    }
+
+    void free_memory(size_t bytes) {
+        memory_left += bytes;
+    }
+
+    bool is_out_of_memory(size_t required_memory) {
+        return (max(memory_left, required_memory) - required_memory) < MEMORY_TOLERANCE;
+    }
 
     void free_probe_resources() {
         for (auto &probe_config : stream_probe_configurations) {
@@ -176,6 +197,10 @@ struct DeviceConfig {
         for (auto stream : streams) {
             gpuErrchk(cudaStreamSynchronize(stream));
         }
+    }
+
+    void set_device() {
+        gpuErrchk(cudaSetDevice(device_id));
     }
 
   private:
@@ -264,12 +289,13 @@ class JoinProvider {
         int max_radix_steps = (8 * sizeof(index_t)) / radix_width;
 
         auto swap_memory = (r_table.get_bytes() + s_table.get_bytes() + (r_table.size + s_table.size) * 2 * sizeof(hash_t));
-        if (out_of_memory(swap_memory)) {
+        if (devices[0]->is_out_of_memory(swap_memory)) {
             free_all();
             auto swap_status = JoinStatus(false, "Not enough memory for swap tables and hashes");
             join_summary.join_status = swap_status;
             return swap_status;
         }
+        devices[0]->reserve_memory(swap_memory);
 
         r_hash_table = db_hash_table(r_table.size, r_table.gpu);
         r_hash_table_swap = db_hash_table(r_table.size, r_table.gpu);
@@ -281,14 +307,14 @@ class JoinProvider {
 
         auto hash_start = std::chrono::high_resolution_clock::now();
 
-        auto hash_status = hash_table(r_table, r_hash_table, devices[0], join_config.hash_config);
+        auto hash_status = hash_table(r_table, r_hash_table, join_config.hash_config);
         if (hash_status.has_failed()) {
             free_all();
             join_summary.join_status = hash_status;
             return hash_status;
         }
 
-        hash_status = hash_table(s_table, s_hash_table, devices[0], join_config.hash_config);
+        hash_status = hash_table(s_table, s_hash_table, join_config.hash_config);
         if (hash_status.has_failed()) {
             free_all();
             join_summary.join_status = hash_status;
@@ -301,11 +327,13 @@ class JoinProvider {
         r_bucket_config->buckets = bins;
         r_bucket_config->table = r_table;
         r_bucket_config->hash_table = r_hash_table;
+        r_bucket_config->device_index = 0;
 
         bucket_ptr s_bucket_config = std::make_shared<BucketConfig>();
         s_bucket_config->buckets = bins;
         s_bucket_config->table = s_table;
         s_bucket_config->hash_table = s_hash_table;
+        s_bucket_config->device_index = 0;
 
         std::vector<bucket_pair_t> bucket_pairs;
 
@@ -315,7 +343,7 @@ class JoinProvider {
         auto hash_end = std::chrono::high_resolution_clock::now();
 
         auto partition_start = std::chrono::high_resolution_clock::now();
-        partition_recursive(r_table_swap, r_hash_table_swap, s_table_swap, s_hash_table_swap, radix_width, r_bucket_config, s_bucket_config, &bucket_pairs, join_config.vector_bytes_size, max_radix_steps, devices[0], true);
+        partition_recursive(r_table_swap, r_hash_table_swap, s_table_swap, s_hash_table_swap, radix_width, r_bucket_config, s_bucket_config, &bucket_pairs, join_config.vector_bytes_size, max_radix_steps, true);
         auto partition_end = std::chrono::high_resolution_clock::now();
         gpuErrchk(cudaGetLastError());
 #if DEBUG_PRINT
@@ -323,7 +351,7 @@ class JoinProvider {
 #endif
 
         auto probe_start = std::chrono::high_resolution_clock::now();
-        auto probe_status = probe(bucket_pairs, radix_width, devices[0], joined_rs_tables);
+        auto probe_status = probe(bucket_pairs, radix_width, joined_rs_tables);
         if (probe_status.has_failed()) {
             free_all();
             join_summary.join_status = probe_status;
@@ -351,7 +379,7 @@ class JoinProvider {
         bucket_pairs.clear();
 
         auto merge_start = std::chrono::high_resolution_clock::now();
-        auto merge_status = merge_joined_tables(joined_rs_tables, joined_rs_table, devices[0]);
+        auto merge_status = merge_joined_tables(joined_rs_tables, joined_rs_table);
         if (merge_status.has_failed()) {
             free_all();
             join_summary.join_status = merge_status;
@@ -400,11 +428,14 @@ class JoinProvider {
 
   private:
     JoinConfig join_config;
-    std::vector<DeviceConfig *> devices;
+    std::vector<std::shared_ptr<DeviceConfig>> devices;
     db_hash_table h_r_entry;
     db_hash_table h_s_entry;
     JoinSummary join_summary;
+
     std::mutex partition_lock;
+    std::mutex summary_lock;
+    std::mutex probe_lock;
 
     db_hash_table r_hash_table;
     db_hash_table r_hash_table_swap;
@@ -432,7 +463,6 @@ class JoinProvider {
 
         for (auto device : devices) {
             device->free();
-            delete device;
         }
         devices.clear();
     }
@@ -453,53 +483,54 @@ class JoinProvider {
     }
 
     void configure_devices() {
-        DeviceConfig *device_config = new DeviceConfig();
-        device_config->device_id = devices.size();
-        device_config->profile_enabled = join_config.profile_enabled;
-        cudaSetDevice(device_config->device_id);
-        for (int stream_index = 0; stream_index < join_config.tasks_p_device; stream_index++) {
-            cudaStream_t stream;
-            cudaStreamCreate(&stream);
+        for (int device_index = 0; device_index < devices.size(); device_index++) {
+            auto device_config = std::make_shared<DeviceConfig>();
+            device_config->device_id = device_index;
+            device_config->profile_enabled = join_config.profile_enabled;
+            cudaSetDevice(device_config->device_id);
 
-            device_config->streams.push_back(stream);
-            device_config->stream_locks.push_back(std::make_shared<std::mutex>());
+            device_config->memory_left = get_memory_left().first;
+            for (int stream_index = 0; stream_index < join_config.tasks_p_device; stream_index++) {
+                cudaStream_t stream;
+                cudaStreamCreate(&stream);
 
-            ProbeConfig probe_config = join_config.probe_config;
-            probe_config.stream = stream;
+                device_config->streams.push_back(stream);
+                device_config->stream_locks.push_back(std::make_shared<std::mutex>());
 
-            PartitionConfig partition_config = join_config.partition_config;
-            partition_config.stream = stream;
+                ProbeConfig probe_config = join_config.probe_config;
+                probe_config.stream = stream;
 
-            if (join_config.profile_enabled) {
-                cudaEvent_t e_start, e_end;
-                cudaEventCreate(&e_start);
-                cudaEventCreate(&e_end);
-                device_config->profiling_events.push_back(e_start);
-                device_config->profiling_events.push_back(e_end);
+                PartitionConfig partition_config = join_config.partition_config;
+                partition_config.stream = stream;
 
-                probe_config.enable_profiling(e_start, e_end);
-                partition_config.enable_profiling(e_start, e_end);
+                if (join_config.profile_enabled) {
+                    cudaEvent_t e_start, e_end;
+                    cudaEventCreate(&e_start);
+                    cudaEventCreate(&e_end);
+                    device_config->profiling_events.push_back(e_start);
+                    device_config->profiling_events.push_back(e_end);
+
+                    probe_config.enable_profiling(e_start, e_end);
+                    partition_config.enable_profiling(e_start, e_end);
+                }
+
+                device_config->stream_partition_configurations.push_back(partition_config);
+                device_config->stream_probe_configurations.push_back(probe_config);
             }
 
-            device_config->stream_partition_configurations.push_back(partition_config);
-            device_config->stream_probe_configurations.push_back(probe_config);
+            devices.push_back(device_config);
         }
-
-        size_t free_mem, total_mem;
-        cudaMemGetInfo(&free_mem, &total_mem);
-
-#if DEBUG_PRINT
-        std::cout << "Mem Free=" << free_mem / std::pow(10, 9) << "GiB Mem Total=" << total_mem / std::pow(10, 9) << "GiB " << std::endl;
-#endif
-
-        devices.push_back(device_config);
     }
 
     void partition_recursive(db_table r_table_swap, db_hash_table r_hash_table_swap, db_table s_table_swap, db_hash_table s_hash_table_swap, int radix_width, bucket_ptr r_bucket_config, bucket_ptr s_bucket_config, std::vector<bucket_pair_t> *bucket_pairs, int max_partition_bytes,
-                             index_t max_radix_steps, DeviceConfig *device_config, bool gpu = true) {
+                             index_t max_radix_steps, bool gpu = true) {
+        int device_index = r_table_swap.device_index;
         int partition_bytes = r_table_swap.get_bytes() + r_hash_table_swap.get_bytes() + s_table_swap.get_bytes() + s_hash_table_swap.get_bytes();
         bool is_any_table_empty = r_bucket_config->hash_table.size == 0 || s_bucket_config->hash_table.size == 0;
         if (!is_any_table_empty && r_bucket_config->bucket_depth < max_radix_steps && partition_bytes > max_partition_bytes) {
+            auto current_device = devices[device_index];
+            current_device->set_device();
+
             int radix_shift = (radix_width * r_bucket_config->bucket_depth);
             int buckets = r_bucket_config->buckets;
 
@@ -509,15 +540,15 @@ class JoinProvider {
             s_bucket_config->histogram = new index_t[buckets];
             s_bucket_config->offsets = new index_t[buckets];
             if (gpu) {
-                int stream_index = device_config->get_next_queue_index();
-                std::lock_guard<std::mutex> stream_lock(*device_config->stream_locks[stream_index]);
+                int stream_index = devices[device_index]->get_next_queue_index();
+                std::lock_guard<std::mutex> stream_lock(*current_device->stream_locks[stream_index]);
 
-                PartitionConfig r_partition_config = device_config->stream_partition_configurations[stream_index];
+                PartitionConfig r_partition_config = current_device->stream_partition_configurations[stream_index];
                 r_partition_config.set_radix_width(radix_width);
                 partition_gpu(r_bucket_config->table, r_bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, r_bucket_config->histogram, r_bucket_config->offsets, r_partition_config);
                 join_summary.partition_summaries.push_back(r_partition_config.profiling_summary);
 
-                PartitionConfig s_partition_config = device_config->stream_partition_configurations[stream_index];
+                PartitionConfig s_partition_config = current_device->stream_partition_configurations[stream_index];
                 s_partition_config.set_radix_width(radix_width);
                 partition_gpu(s_bucket_config->table, s_bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, s_bucket_config->histogram, s_bucket_config->offsets, s_partition_config);
 
@@ -533,9 +564,8 @@ class JoinProvider {
             s_bucket_config->sub_buckets = std::vector<bucket_ptr>(buckets);
             std::vector<std::thread> partition_threads;
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++) {
-                /*
-                 * R - Swap
-                 */
+
+                // read partition offsets and sizes
                 index_t r_sub_elements = r_bucket_config->histogram[bucket_index];
                 index_t r_sub_offset = r_bucket_config->offsets[bucket_index];
                 index_t s_sub_elements = s_bucket_config->histogram[bucket_index];
@@ -570,11 +600,39 @@ class JoinProvider {
                 db_table sub_s_table_swap(s_sub_offset, s_sub_elements, s_bucket_config->table);
                 db_hash_table sub_s_hash_table_swap(s_sub_offset, s_sub_elements, s_bucket_config->hash_table);
 
-                auto partition_child = [this, sub_r_table_swap, sub_r_hash_table_swap, sub_s_table_swap, sub_s_hash_table_swap, radix_width, r_sub_bucket, s_sub_bucket, bucket_pairs, max_partition_bytes, max_radix_steps, device_config, gpu]() {
-                    partition_recursive(sub_r_table_swap, sub_r_hash_table_swap, sub_s_table_swap, sub_s_hash_table_swap, radix_width, r_sub_bucket, s_sub_bucket, bucket_pairs, max_partition_bytes, max_radix_steps, device_config, gpu);
+                // apply radix split if the first split has to be done and more than one device is available
+                if (join_config.devices > 1 && join_config.join_mode == JoinConfig::MODE_RADIX_SPLIT && r_bucket_config->bucket_depth == 0) {
+                    int target_device_index = join_config.devices % (bucket_index + 1);
+
+                    // dont copy to master who already has the data
+                    if (target_device_index != 0) {
+                        auto target_device = devices[target_device_index];
+
+                        // start a new stream for each copy operation to improve latency
+                        // copy r table to new device
+                        r_sub_bucket->table = r_sub_bucket->table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        r_sub_bucket->hash_table = r_sub_bucket->hash_table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+
+                        // copy s table to new device
+                        s_sub_bucket->table = s_sub_bucket->table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        s_sub_bucket->hash_table = s_sub_bucket->hash_table.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+
+                        // copy swap for r to new device
+                        sub_r_table_swap = sub_r_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        sub_r_hash_table_swap = sub_r_hash_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+
+                        // copy swap for s to new device
+                        sub_r_table_swap = sub_r_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                        sub_r_hash_table_swap = sub_r_hash_table_swap.copyAsync(target_device->device_id, target_device->streams[target_device->get_next_queue_index()]);
+                    }
+                }
+
+                auto partition_child = [this, sub_r_table_swap, sub_r_hash_table_swap, sub_s_table_swap, sub_s_hash_table_swap, radix_width, r_sub_bucket, s_sub_bucket, bucket_pairs, max_partition_bytes, max_radix_steps, gpu]() {
+                    partition_recursive(sub_r_table_swap, sub_r_hash_table_swap, sub_s_table_swap, sub_s_hash_table_swap, radix_width, r_sub_bucket, s_sub_bucket, bucket_pairs, max_partition_bytes, max_radix_steps, gpu);
                 };
-                partition_child();
-                // partition_threads.push_back(std::thread(partition_child));
+
+                // partition_child();
+                partition_threads.push_back(std::thread(partition_child));
             }
             for (auto &partition_thread : partition_threads) {
                 partition_thread.join();
@@ -665,45 +723,113 @@ class JoinProvider {
         }
     }
 
-    JoinStatus probe(std::vector<bucket_pair_t> &bucket_pairs, int radix_width, DeviceConfig *device_config, std::vector<db_table> &joined_rs_tables) {
+    JoinStatus probe(std::vector<bucket_pair_t> &bucket_pairs, int radix_width, std::vector<db_table> &joined_rs_tables) {
+        // sort buckets so greates element is first and creates the largest buffer for probing which can be reused
         std::sort(std::begin(bucket_pairs), std::end(bucket_pairs), bucket_pair_comparator());
+
+        // status list for all joins
+        std::vector<JoinStatus> join_status_list = std::vector<JoinStatus>(bucket_pairs.size());
+
+        // contains all thread for probing
+        std::vector<std::thread> probe_threads;
+
         for (size_t bucket_pair_index = 0; bucket_pair_index < bucket_pairs.size(); bucket_pair_index++) {
-            bucket_ptr r_config = bucket_pairs[bucket_pair_index].first;
-            bucket_ptr s_config = bucket_pairs[bucket_pair_index].second;
 
-            if (r_config->hash_table.size && s_config->hash_table.size) {
-                // offset for table key
-                int key_offset = (radix_width * r_config->bucket_depth);
+            bucket_pair_t bucket = bucket_pairs[bucket_pair_index];
+            auto probe_bucket = [this, bucket_pair_index, bucket, &joined_rs_tables, &join_status_list, radix_width] {
+                bucket_ptr r_config = bucket.first;
+                bucket_ptr s_config = bucket.second;
 
-                int queue_index = device_config->get_next_queue_index();
-                ProbeConfig *probe_config = &device_config->stream_probe_configurations[queue_index];
-                probe_config->probe_mode = join_config.probe_config.probe_mode;
-
-                int64_t required_probe_memory = (int64_t)get_probe_size(bucket_pairs[bucket_pair_index], *probe_config) - probe_config->get_allocated_memory();
-                if (required_probe_memory > 0 && out_of_memory(required_probe_memory)) {
-                    return JoinStatus(false, "Cannot allocate new memory for probing");
+                if (r_config->device_index != s_config->device_index) {
+                    join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot probe two bucekts from different devices");
+                    return;
                 }
 
-                db_table joined_rs_table;
-                auto probe_status = build_and_probe_gpu(r_config->table, r_config->hash_table, s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
-                if (probe_status.has_failed()) {
-                    return probe_status;
-                }
+                if (r_config->hash_table.size && s_config->hash_table.size) {
+                    // offset for table key
+                    int key_offset = (radix_width * r_config->bucket_depth);
+                    auto device_config = devices[r_config->device_index];
 
-                joined_rs_tables.push_back(joined_rs_table);
+                    if (join_config.devices > 1 && join_config.join_mode == JoinConfig::MODE_VECTOR_SPLIT) {
+                        int device_index = bucket_pair_index % join_config.devices;
+                        if (device_config->device_id != device_index) {
 
-                if (device_config->profile_enabled) {
-                    join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
+                            device_config = devices[device_index];
+
+                            r_config->table = r_config->table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+                            r_config->hash_table = r_config->hash_table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+
+                            s_config->table = s_config->table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+                            s_config->hash_table = s_config->hash_table.copyAsync(device_index, device_config->streams[device_config->get_next_queue_index()]);
+
+                            device_config->synchronize_device();
+                        }
+                    }
+
+                    device_config->set_device();
+                    int queue_index = device_config->get_next_queue_index();
+                    ProbeConfig *probe_config = &device_config->stream_probe_configurations[queue_index];
+                    probe_config->probe_mode = join_config.probe_config.probe_mode;
+
+                    // lock for data reservation and probing on device
+                    std::lock_guard<std::mutex> lock(device_config->device_lock);
+
+                    // calculate memory required for probing and rs buffers
+                    size_t required_probe_memory = max((int64_t)get_probe_size(bucket, *probe_config) - probe_config->get_allocated_memory(), 0L);
+                    size_t required_rs_memory = db_table::get_bytes(r_config->table.size * s_config->table.size, r_config->table.column_count);
+                    size_t required_memory = required_probe_memory + required_rs_memory;
+                    if (device_config->is_out_of_memory(required_memory)) {
+                        join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot allocate new memory for probing");
+                        return;
+                    }
+                    device_config->reserve_memory(required_memory);
+
+                    // probe r and s table
+                    db_table joined_rs_table;
+                    auto probe_status = build_and_probe_gpu(r_config->table, r_config->hash_table, s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
+                    joined_rs_table.device_index = device_config->device_id;
+
+                    // free unused probe memory
+                    device_config->free_memory(required_rs_memory - joined_rs_table.get_bytes());
+
+                    // store rs table if probing was successful
+                    if (probe_status.has_failed()) {
+                        join_status_list[bucket_pair_index] = probe_status;
+                        return;
+                    } else {
+                        std::lock_guard<std::mutex> lock(probe_lock);
+                        joined_rs_tables.push_back(joined_rs_table);
+                    }
+
+                    // store profile
+                    if (device_config->profile_enabled) {
+                        std::lock_guard<std::mutex> lock(summary_lock);
+                        join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
+                    }
+                    join_status_list[bucket_pair_index] = JoinStatus(true);
                 }
+            };
+
+            probe_threads.push_back(std::thread(probe_bucket));
+        }
+
+        for (auto &thread : probe_threads) {
+            thread.join();
+        }
+
+        for (auto join_status : join_status_list) {
+            if (join_status.has_failed()) {
+                return join_status;
             }
         }
         return JoinStatus(true);
     }
 
-    JoinStatus hash_table(db_table table, db_hash_table &hash_table, DeviceConfig *device_config, HashConfig hash_config) {
+    JoinStatus hash_table(db_table table, db_hash_table &hash_table, HashConfig hash_config) {
         // create indices
         // copy hashes to gpu if required
         if (table.gpu) {
+            auto device_config = devices[table.device_index];
             int queue_index = device_config->get_next_queue_index();
             hash_config.stream = device_config->streams[queue_index];
 
@@ -734,10 +860,13 @@ class JoinProvider {
         return JoinStatus(true);
     }
 
-    JoinStatus merge_joined_tables(std::vector<db_table> &partial_rs_tables, db_table &joined_rs_table, DeviceConfig *device_config) {
+    JoinStatus merge_joined_tables(std::vector<db_table> &partial_rs_tables, db_table &joined_rs_table) {
         if (partial_rs_tables.size() == 0) {
             return JoinStatus(true);
         }
+
+        // always copy back to first device
+        auto device_config = devices[0];
 
         index_t merged_size = 0;
         std::for_each(std::begin(partial_rs_tables), std::end(partial_rs_tables), [&merged_size](const db_table &table) { merged_size += table.size; });
@@ -752,14 +881,16 @@ class JoinProvider {
         if (joined_rs_table.gpu) {
             // print_mem();
 
-            if (out_of_memory(joined_rs_table.get_bytes())) {
+            size_t rs_bytes = joined_rs_table.get_bytes();
+            if (device_config->is_out_of_memory(rs_bytes)) {
                 return JoinStatus(false, "Not enough memory for full rs table (" + std::to_string(joined_rs_table.size) + " Rows)");
             }
+            device_config->reserve_memory(rs_bytes);
 
             gpuErrchk(cudaMalloc(&joined_rs_table.column_values, joined_rs_table.column_count * joined_rs_table.size * sizeof(column_t)));
             gpuErrchk(cudaMalloc(&joined_rs_table.primary_keys, joined_rs_table.size * sizeof(column_t)));
 
-            generate_primary_key_kernel<<<joined_rs_table.size / 256, 256, 0, device_config->streams[device_config->get_next_queue_index()]>>>(joined_rs_table);
+            generate_primary_key_kernel<<<max((index_t)1, joined_rs_table.size / 256), 256, 0, device_config->streams[device_config->get_next_queue_index()]>>>(joined_rs_table);
 
             for (auto table_it = partial_rs_tables.begin(); table_it != partial_rs_tables.end(); table_it++) {
                 int stream_index = device_config->get_next_queue_index();

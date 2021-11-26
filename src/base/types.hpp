@@ -29,6 +29,9 @@ struct db_hash_table {
     bool gpu = false;
     bool data_owner = false;
 
+    // owner of data
+    int device_index = 0;
+
     db_hash_table() {
         hashes = nullptr;
         // indices = nullptr;
@@ -36,17 +39,17 @@ struct db_hash_table {
         data_owner = true;
     }
 
-    db_hash_table(index_t table_size, bool gpu = true) {
+    db_hash_table(index_t table_size, bool gpu = true, int device_index = 0) {
         this->size = table_size;
         this->gpu = gpu;
         this->data_owner = true;
+        this->device_index = device_index;
 
         if (gpu) {
+            gpuErrchk(cudaSetDevice(device_index));
             gpuErrchk(cudaMalloc(&hashes, size * sizeof(hash_t)));
-            // gpuErrchk(cudaMalloc(&indices, size * sizeof(index_t)));
         } else {
             hashes = new hash_t[size];
-            // indices = new index_t[size];
         }
     }
 
@@ -54,8 +57,16 @@ struct db_hash_table {
         this->size = size;
         this->gpu = table_source.gpu;
         this->hashes = &table_source.hashes[offset];
-        // this->indices = &table_source.indices[offset];
         this->data_owner = false;
+        this->device_index = table_source.device_index;
+    }
+
+    __device__ __host__ db_hash_table(const db_hash_table &table) {
+        this->data_owner = table.data_owner;
+        this->gpu = table.gpu;
+        this->device_index = table.device_index;
+        this->size = table.size;
+        this->hashes = table.hashes;
     }
 
     void print() const {
@@ -76,11 +87,30 @@ struct db_hash_table {
         }
     }
 
-    int get_bytes() { return size * sizeof(hash_t); }
+    int get_bytes() {
+        return db_hash_table::get_bytes(size);
+    }
+
+    static int get_bytes(index_t size) {
+        return sizeof(hash_t) * size;
+    }
+
+    db_hash_table copyAsync(int device_index = 0, cudaStream_t stream = 0) {
+        db_hash_table copy_table;
+        copy_table.device_index = device_index;
+        gpuErrchk(cudaSetDevice(device_index));
+        gpuErrchk(cudaMallocAsync(&copy_table.hashes, size * sizeof(hash_t), stream));
+        gpuErrchk(cudaMemcpyAsync(copy_table.hashes, hashes, size * sizeof(hash_t), cudaMemcpyDeviceToDevice, stream));
+        copy_table.data_owner = true;
+        copy_table.gpu = true;
+        copy_table.size = size;
+        return copy_table;
+    }
 
     void free() {
         if (data_owner) {
             if (gpu) {
+                gpuErrchk(cudaSetDevice(device_index));
                 gpuErrchk(cudaFree(hashes));
                 // gpuErrchk(cudaFree(indices));
             } else {
@@ -101,6 +131,7 @@ struct db_table {
     index_t size;
     bool gpu = false;
     bool data_owner = false;
+    int device_index = 0;
 
     db_table() {
         column_count = 0;
@@ -108,6 +139,7 @@ struct db_table {
         primary_keys = nullptr;
         size = 0;
         data_owner = true;
+        device_index = 0;
     }
 
     db_table(size_t column_count, index_t table_size, bool gpu = true) {
@@ -134,6 +166,25 @@ struct db_table {
         this->primary_keys = &table_source.primary_keys[offset];
     }
 
+    db_table copyAsync(int device_index, cudaStream_t stream = 0) {
+        if (gpu) {
+            db_table table_copy;
+            table_copy.column_count = column_count;
+            table_copy.gpu = true;
+            table_copy.data_owner = true;
+            table_copy.size = size;
+            table_copy.device_index = device_index;
+            gpuErrchk(cudaSetDevice(device_index));
+            gpuErrchk(cudaMallocAsync(&table_copy.column_values, table_copy.size * table_copy.column_count * sizeof(column_t), stream));
+            gpuErrchk(cudaMallocAsync(&table_copy.primary_keys, table_copy.size * sizeof(column_t), stream));
+            gpuErrchk(cudaMemcpyAsync(table_copy.column_values, column_values, table_copy.size * table_copy.column_count * sizeof(column_t), cudaMemcpyDeviceToDevice));
+            gpuErrchk(cudaMemcpyAsync(table_copy.primary_keys, primary_keys, table_copy.size * sizeof(column_t), cudaMemcpyDeviceToDevice));
+            return table_copy;
+        } else {
+            return copy(false);
+        }
+    }
+
     db_table copy(bool to_gpu) {
         db_table table_copy;
         table_copy.column_count = column_count;
@@ -157,7 +208,9 @@ struct db_table {
         return table_copy;
     }
 
-    int get_bytes() { return size * (column_count + 1) * sizeof(column_t); }
+    int get_bytes() {
+        return db_table::get_bytes(size, column_count);
+    }
 
     void print() {
         db_table h_table;
@@ -180,12 +233,15 @@ struct db_table {
         }
     }
 
-    void free() { free(0); }
+    void free() {
+        free(0);
+    }
 
     void free(cudaStream_t stream) {
         if (size > 0) {
             if (data_owner) {
                 if (gpu) {
+                    gpuErrchk(cudaSetDevice(device_index));
                     if (stream) {
                         gpuErrchk(cudaFreeAsync(column_values, stream));
                         gpuErrchk(cudaFreeAsync(primary_keys, stream));
@@ -205,8 +261,8 @@ struct db_table {
         }
     }
 
-    static int get_bytes(index_t elements, int columns) { 
-        return sizeof(column_t) * elements * (columns + 1); 
+    static size_t get_bytes(index_t elements, int columns) {
+        return sizeof(column_t) * elements * (columns + 1);
     }
 };
 

@@ -771,10 +771,12 @@ JoinStatus build_and_probe_gpu(db_table d_r_table, db_hash_table d_r_hash_table,
     // gpuErrchk(cudaGetLastError());
 
     if (d_joined_rs_table.size > 0) {
+        /*
         auto rs_table_memory = (d_joined_rs_table.column_count + 1) * d_joined_rs_table.size * sizeof(column_t);
         if (out_of_memory(rs_table_memory)) {
             return JoinStatus(false, "Not enough memory for rs table (" + std::to_string(d_joined_rs_table.size) + " Rows)");
         }
+        */
 
         gpuErrchk(cudaMallocAsync(&d_joined_rs_table.primary_keys, d_joined_rs_table.size * sizeof(column_t), config.stream));
         gpuErrchk(cudaMallocAsync(&d_joined_rs_table.column_values, d_joined_rs_table.column_count * d_joined_rs_table.size * sizeof(column_t), config.stream));

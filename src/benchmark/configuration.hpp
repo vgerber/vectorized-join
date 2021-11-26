@@ -31,6 +31,7 @@ struct JoinBenchmarkSetup {
     std::vector<float> rs_scales;
     std::vector<int> rs_join_columns;
     std::vector<int> vector_bytes_sizes;
+    std::vector<int> join_modes;
 };
 
 struct BenchmarkSetup
@@ -78,16 +79,17 @@ struct JoinBenchmarkConfig
     int rs_columns = 0;
     float rs_scale = 1.0;
     int vector_bytes_size = 0;
+    int join_mode = 0;
 
     static std::string to_string_header() {
         std::ostringstream string_stream;
-        string_stream << "rs_columns,rs_scale,buckets,vector_bytes_size";
+        string_stream << "rs_columns,rs_scale,buckets,vector_bytes_size,join_mode";
         return string_stream.str();
     }
 
     std::string to_string() {
         std::ostringstream string_stream;
-        string_stream << rs_columns << "," << rs_scale << "," << buckets << "," << vector_bytes_size;
+        string_stream << rs_columns << "," << rs_scale << "," << buckets << "," << vector_bytes_size << "," << join_mode;
         return string_stream.str();
     }
 };
@@ -303,12 +305,15 @@ std::vector<JoinBenchmarkConfig> get_join_configs(BenchmarkSetup setup) {
             for(auto rs_columns : setup.join_setup.rs_join_columns) {
                 for(auto buckets : setup.join_setup.buckets) {
                     for(auto vector_bytes_size : setup.join_setup.vector_bytes_sizes) {
-                        JoinBenchmarkConfig config;
-                        config.rs_columns = rs_columns;
-                        config.rs_scale = rs_scale;
-                        config.buckets = buckets;
-                        config.vector_bytes_size = vector_bytes_size;
-                        configs.push_back(config);
+                        for(auto join_mode : setup.join_setup.join_modes) {
+                            JoinBenchmarkConfig config;
+                            config.rs_columns = rs_columns;
+                            config.rs_scale = rs_scale;
+                            config.buckets = buckets;
+                            config.join_mode = join_mode;
+                            config.vector_bytes_size = vector_bytes_size;
+                            configs.push_back(config);
+                        }
                     }
                 }
             }
@@ -478,6 +483,18 @@ bool load_join_benchmark_setup(toml::value config_file, std::string profile, Ben
     if (config_file.at(profile).contains(field))
     {
         setup->join_setup.vector_bytes_sizes = toml::find<std::vector<int>>(config_file, profile, field);
+    }
+    else
+    {
+        std::cout << profile << "." << field << " not found" << std::endl;
+        return false;
+    }
+
+    field = "join_modes";
+    std::cout << "Read " << field << std::endl;
+    if (config_file.at(profile).contains(field))
+    {
+        setup->join_setup.join_modes = toml::find<std::vector<int>>(config_file, profile, field);
     }
     else
     {
