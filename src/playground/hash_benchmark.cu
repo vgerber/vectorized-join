@@ -63,7 +63,7 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
     short int element_chunks = 0;
 
     int threads = hash_benchmark_config.thread_size;
-    int blocks = max(element_buffer_size / threads, (index_t)1);
+    int blocks = max(element_buffer_size / threads / hash_benchmark_config.hashes_p_thread, (index_t)1);
     for (int run_index = 0; run_index < benchmark_config.runs; run_index++) {
 
         /*
@@ -101,6 +101,7 @@ HashBenchmarkResult hash_single_gpu(BenchmarkConfig benchmark_config, HashBenchm
             hash_config.stream = device_stream[gpu_index];
             hash_config.algorithm = hash_benchmark_config.algorithm;
             hash_config.threads_per_block = hash_benchmark_config.thread_size;
+            hash_config.elements_per_thread = hash_benchmark_config.hashes_p_thread;
             hash_config.enable_profile(hash_events[gpu_index * hash_event_count], hash_events[gpu_index * hash_event_count + 1]);
             hash_func(element_buffer_size, 0, element_chunks, d_element_buffers[gpu_index], d_hashed_buffers[gpu_index], hash_config);
         }
@@ -177,7 +178,7 @@ HashBenchmarkResult hash_shared_gpu(BenchmarkConfig benchmark_config, HashBenchm
     short int element_chunks = 0;
 
     int threads = hash_benchmark_config.thread_size;
-    int blocks = max(element_buffer_size / threads, (index_t)1);
+    int blocks = max(element_buffer_size / threads / hash_benchmark_config.hashes_p_thread, (index_t)1);
     for (int run_index = 0; run_index < benchmark_config.runs; run_index++) {
 
         /*
@@ -259,6 +260,7 @@ HashBenchmarkResult hash_shared_gpu(BenchmarkConfig benchmark_config, HashBenchm
             hash_config.stream = device_stream[gpu_index];
             hash_config.algorithm = hash_benchmark_config.algorithm;
             hash_config.threads_per_block = hash_benchmark_config.thread_size;
+            hash_config.elements_per_thread = hash_benchmark_config.hashes_p_thread;
             hash_config.enable_profile(hash_events[gpu_index * hash_event_count], hash_events[gpu_index * hash_event_count + 1]);
             hash_func(buffer_sizes[gpu_index], 0, element_chunks, d_element_buffers[gpu_index], d_hashed_buffers[gpu_index], hash_config);
 
