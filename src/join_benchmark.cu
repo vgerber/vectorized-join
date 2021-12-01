@@ -218,8 +218,8 @@ int main(int argc, char **argv) {
                         // std::cout << "C " << config_index << "/" << config_count << " "
                         // << run_index << std::endl;
                         int column_count = join_benchmark_config.rs_columns;
-                        index_t r_table_size = benchmark_config.elements;
-                        index_t s_table_size = r_table_size / join_benchmark_config.rs_scale;
+                        index_t s_table_size = benchmark_config.elements;
+                        index_t r_table_size = s_table_size / join_benchmark_config.rs_scale;
 
                         db_table r_table;
                         db_table s_table;
