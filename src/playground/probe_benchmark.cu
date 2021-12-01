@@ -130,8 +130,8 @@ int main(int argc, char **argv) {
                     probe_config.enable_profiling(profiling_start, profiling_end);
                 }
 
-                if (probe_config.get_max_table_elements() < r_table_size) {
-                    std::cout << "Skipping config" << std::endl;
+                if (probe_config.probe_mode == ProbeConfig::MODE_PARTITION_S && probe_config.get_max_table_elements() < r_table_size) {
+                    std::cout << "Skipping config due table size" << std::endl;
                     continue;
                 }
                 double tuples_p_second_avg = 0.0;
