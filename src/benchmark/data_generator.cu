@@ -42,7 +42,7 @@ __global__ void zipf_distribution_kernel(int max_rank, float skew, float *zipf_c
     }
 }
 
-__global__ void zipf_kernel(int elements, column_t *element_buffer, float *uniform_values, float *zipf_distribution, int max_rank, float skew) {
+__global__ void zipf_kernel(int elements, int column_count, column_t *element_buffer, float *uniform_values, float *zipf_distribution, int max_rank, float skew) {
     float margin = 0.00001f;
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
@@ -50,19 +50,23 @@ __global__ void zipf_kernel(int elements, column_t *element_buffer, float *unifo
         float uniform_value = max(margin, min(uniform_values[value_index], 1.f - margin));
         for (int rank_index = 1; rank_index <= max_rank; rank_index++) {
             if (zipf_distribution[rank_index - 1] >= uniform_value) {
-                element_buffer[value_index] = rank_index;
+                for (int column_index = 0; column_index < column_count; column_index++) {
+                    element_buffer[value_index * column_count + column_index] = rank_index;
+                }
                 break;
             }
         }
     }
 }
 
-__global__ void uniform_kernel(int elements, column_t *element_buffer, float *uniform_values, column_t value_offset, column_t value_max) {
+__global__ void uniform_kernel(int elements, int column_count, column_t *element_buffer, float *uniform_values, column_t value_offset, column_t value_max) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = gridDim.x * blockDim.x;
+    int stride = (gridDim.x * blockDim.x);
     for (int value_index = index; value_index < elements; value_index += stride) {
         column_t value = uniform_values[value_index] * (value_max - value_offset);
-        element_buffer[value_index] = value_offset + value;
+        for (int column_index = 0; column_index < column_count; column_index++) {
+            element_buffer[value_index * column_count + column_index] = value_offset + value;
+        }
     }
 }
 
@@ -147,7 +151,7 @@ void generate_table_data(db_table &table, column_t value_max, float skew, std::s
     gpuErrchk(cudaGetLastError());
 
     float *d_distribution = nullptr;
-    index_t distribution_values_count = table.size * table.column_count;
+    index_t distribution_values_count = table.size;
     gpuErrchk(cudaMalloc(&d_distribution, distribution_values_count * sizeof(float)));
 
     if (rand_gens.size() == 0) {
@@ -178,12 +182,12 @@ void generate_table_data(db_table &table, column_t value_max, float skew, std::s
         int threads = 256;
         zipf_constant_kernel<<<max((column_t)1, value_max / threads), threads>>>(value_max, skew, d_zipf_constant);
         zipf_distribution_kernel<<<max((column_t)1, value_max / threads), threads>>>(value_max, skew, d_zipf_constant, d_zipf_distribution);
-        zipf_kernel<<<max(1ULL, table.size * value_max / threads), threads>>>(table.size, table.column_values, d_distribution, d_zipf_distribution, value_max, skew);
+        zipf_kernel<<<max(1ULL, table.size * value_max / threads), threads>>>(table.size, table.column_count, table.column_values, d_distribution, d_zipf_distribution, value_max, skew);
 
         gpuErrchk(cudaFree(d_zipf_constant));
         gpuErrchk(cudaFree(d_zipf_distribution));
     } else if (distribution == DIST_UNIFORM) {
-        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_values, d_distribution, ceil(skew * value_max), value_max);
+        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_count, table.column_values, d_distribution, ceil(skew * value_max), value_max);
     }
     gpuErrchk(cudaFree(d_distribution));
 
