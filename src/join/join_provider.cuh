@@ -965,9 +965,16 @@ class JoinProvider {
             generate_primary_key_kernel<<<max((index_t)1, joined_rs_table.size / 256), 256, 0, device_config->streams[device_config->get_next_queue_index()]>>>(joined_rs_table);
 
             for (auto table_it = partial_rs_tables.begin(); table_it != partial_rs_tables.end(); table_it++) {
-                int stream_index = device_config->get_next_queue_index();
-                gpuErrchk(cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset * table_it->column_count], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]));
-                gpuErrchk(cudaMemcpyAsync(&joined_rs_table.primary_keys[merge_offset], table_it->primary_keys, table_it->size * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]));
+                auto rs_device = devices[table_it->device_index];
+                rs_device->set_device();
+                int stream_index = rs_device->get_next_queue_index();
+                if (rs_device->device_id == 0) {
+                    gpuErrchk(cudaMemcpyAsync(&joined_rs_table.column_values[merge_offset * table_it->column_count], table_it->column_values, table_it->size * table_it->column_count * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]));
+                    gpuErrchk(cudaMemcpyAsync(&joined_rs_table.primary_keys[merge_offset], table_it->primary_keys, table_it->size * sizeof(column_t), cudaMemcpyDeviceToDevice, device_config->streams[stream_index]));
+                } else {
+                    gpuErrchk(cudaMemcpyPeerAsync(&joined_rs_table.column_values[merge_offset * table_it->column_count], 0, table_it->column_values, rs_device->device_id, table_it->size * table_it->column_count * sizeof(column_t), rs_device->streams[stream_index]));
+                    gpuErrchk(cudaMemcpyPeerAsync(&joined_rs_table.primary_keys[merge_offset], 0, table_it->primary_keys, rs_device->device_id, table_it->size * sizeof(column_t), rs_device->streams[stream_index]));
+                }
                 merge_offset += table_it->size;
                 // table_it->free(device_config->streams[stream_index]);
             }
