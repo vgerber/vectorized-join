@@ -621,10 +621,6 @@ void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_tabl
         int swap_element_size = (sizeof(hash_t) + d_table.column_count * sizeof(column_t));
         partition_config.profiling_summary.k_swap_gb_p_second = d_table.size * swap_element_size / runtime_s / pow(10, 9);
     }
-
-    gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaGetLastError());
-    // gpuErrchk(cudaStreamSynchronize(partition_config.stream));
 }
 
 struct is_greater_zero {

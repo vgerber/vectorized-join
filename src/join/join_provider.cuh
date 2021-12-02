@@ -1,4 +1,5 @@
 #pragma once
+#include <condition_variable>
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
@@ -454,6 +455,36 @@ class JoinProvider {
 
     std::vector<db_table> joined_rs_tables;
 
+    // max thread slots
+    int max_threads = 50;
+    // active slots
+    int current_threads = 0;
+    // semaphore for thread locks
+    std::condition_variable max_threads_lock;
+    // semaphore for last thread finished
+    std::condition_variable threads_finished_lock;
+
+    void acquire_thread() {
+        // wait for free thread slot
+        std::unique_lock<std::mutex> lock(probe_lock);
+        while (current_threads >= max_threads) {
+            max_threads_lock.wait(lock);
+        }
+        current_threads++;
+    }
+
+    void release_thread() {
+        // free thread slot
+        std::lock_guard<std::mutex> lock(probe_lock);
+        current_threads--;
+        max_threads_lock.notify_one();
+
+        // notify when no threads left
+        if (current_threads == 0) {
+            threads_finished_lock.notify_one();
+        }
+    }
+
     void free_all() {
         r_hash_table.free();
         r_hash_table_swap.free();
@@ -562,14 +593,18 @@ class JoinProvider {
                 PartitionConfig r_partition_config = current_device->stream_partition_configurations[stream_index];
                 r_partition_config.set_radix_width(radix_width);
                 partition_gpu(r_bucket_config->table, r_bucket_config->hash_table, r_table_swap, r_hash_table_swap, radix_shift, r_bucket_config->histogram, r_bucket_config->offsets, r_partition_config);
-                join_summary.partition_summaries.push_back(r_partition_config.profiling_summary);
 
                 PartitionConfig s_partition_config = current_device->stream_partition_configurations[stream_index];
                 s_partition_config.set_radix_width(radix_width);
                 partition_gpu(s_bucket_config->table, s_bucket_config->hash_table, s_table_swap, s_hash_table_swap, radix_shift, s_bucket_config->histogram, s_bucket_config->offsets, s_partition_config);
 
                 gpuErrchk(cudaStreamSynchronize(s_partition_config.stream));
-                join_summary.partition_summaries.push_back(s_partition_config.profiling_summary);
+
+                {
+                    std::lock_guard<std::mutex> lock(partition_lock);
+                    join_summary.partition_summaries.push_back(s_partition_config.profiling_summary);
+                    join_summary.partition_summaries.push_back(r_partition_config.profiling_summary);
+                }
             } else {
                 // partition(bucket_config->data, s_swap_entry, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, gpu);
             }
@@ -748,8 +783,10 @@ class JoinProvider {
 
         // contains all thread for probing
         std::vector<std::thread> probe_threads;
-
         for (size_t bucket_pair_index = 0; bucket_pair_index < bucket_pairs.size(); bucket_pair_index++) {
+
+            // lock thread slot for bucket
+            acquire_thread();
 
             bucket_pair_t bucket = bucket_pairs[bucket_pair_index];
             auto probe_bucket = [this, bucket_pair_index, bucket, &joined_rs_tables, &join_status_list, radix_width] {
@@ -758,6 +795,7 @@ class JoinProvider {
 
                 if (r_config->device_index != s_config->device_index) {
                     join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot probe two bucekts from different devices");
+                    release_thread();
                     return;
                 }
 
@@ -797,6 +835,7 @@ class JoinProvider {
                         std::lock_guard<std::mutex> lock(device_config->device_lock);
                         if (device_config->is_out_of_memory(required_memory)) {
                             join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot allocate new memory for probing");
+                            release_thread();
                             return;
                         }
                         device_config->reserve_memory(required_memory);
@@ -823,6 +862,7 @@ class JoinProvider {
                     // store rs table if probing was successful
                     if (probe_status.has_failed()) {
                         join_status_list[bucket_pair_index] = probe_status;
+                        release_thread();
                         return;
                     } else {
                         std::lock_guard<std::mutex> lock(probe_lock);
@@ -835,16 +875,19 @@ class JoinProvider {
                         join_summary.probe_summaries.push_back((*probe_config).profiling_summary);
                     }
                     join_status_list[bucket_pair_index] = JoinStatus(true);
+                    release_thread();
                 }
             };
-
-            probe_threads.push_back(std::thread(probe_bucket));
+            std::thread(probe_bucket).detach();
         }
 
-        for (auto &thread : probe_threads) {
-            thread.join();
+        // wait until last thread has finished
+        while (current_threads > 0) {
+            std::unique_lock<std::mutex> lock(probe_lock);
+            threads_finished_lock.wait(lock);
         }
 
+        // check if any thread has failed
         for (auto join_status : join_status_list) {
             if (join_status.has_failed()) {
                 return join_status;
