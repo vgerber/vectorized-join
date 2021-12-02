@@ -600,7 +600,7 @@ class JoinProvider {
 
                 gpuErrchk(cudaStreamSynchronize(s_partition_config.stream));
 
-                {
+                if (join_config.profile_enabled) {
                     std::lock_guard<std::mutex> lock(partition_lock);
                     join_summary.partition_summaries.push_back(s_partition_config.profiling_summary);
                     join_summary.partition_summaries.push_back(r_partition_config.profiling_summary);
@@ -865,6 +865,7 @@ class JoinProvider {
                         release_thread();
                         return;
                     } else {
+
                         std::lock_guard<std::mutex> lock(probe_lock);
                         joined_rs_tables.push_back(joined_rs_table);
                     }
