@@ -285,9 +285,13 @@ int main(int argc, char **argv) {
             }
         }
     }
-    std::fstream run_profile_stream;
-    run_profile_stream.open((benchmark_setup.output_file_path + "/run_profile.json"), std::ios::app);
-    run_profile_stream << profile_json.dump(1) << std::endl;
 
+    if (benchmark_setup.profile) {
+        std::fstream run_profile_stream;
+        run_profile_stream.open((benchmark_setup.output_file_path + "/run_profile.json"), std::ios::app);
+        run_profile_stream << profile_json.dump(1) << std::endl;
+        run_profile_stream.close();
+    }
+    run_csv_stream.close();
     return 0;
 }
