@@ -787,26 +787,38 @@ class JoinProvider {
                     ProbeConfig *probe_config = &device_config->stream_probe_configurations[queue_index];
                     probe_config->probe_mode = join_config.probe_config.probe_mode;
 
-                    // lock for data reservation and probing on device
-                    std::lock_guard<std::mutex> lock(device_config->device_lock);
-
                     // calculate memory required for probing and rs buffers
                     size_t required_probe_memory = max((int64_t)get_probe_size(bucket, *probe_config) - probe_config->get_allocated_memory(), 0L);
                     size_t required_rs_memory = db_table::get_bytes(r_config->table.size * s_config->table.size, r_config->table.column_count);
                     size_t required_memory = required_probe_memory + required_rs_memory;
-                    if (device_config->is_out_of_memory(required_memory)) {
-                        join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot allocate new memory for probing");
-                        return;
-                    }
-                    device_config->reserve_memory(required_memory);
 
-                    // probe r and s table
+                    // lock for data reservation on device
+                    {
+                        std::lock_guard<std::mutex> lock(device_config->device_lock);
+                        if (device_config->is_out_of_memory(required_memory)) {
+                            join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot allocate new memory for probing");
+                            return;
+                        }
+                        device_config->reserve_memory(required_memory);
+                    }
+
+                    // final rs tabel
                     db_table joined_rs_table;
-                    auto probe_status = build_and_probe_gpu(r_config->table, r_config->hash_table, s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
-                    joined_rs_table.device_index = device_config->device_id;
+                    JoinStatus probe_status;
+
+                    // lock for stream resources like probe buffers
+                    {
+                        std::lock_guard<std::mutex> lock(*device_config->stream_locks[queue_index]);
+                        // probe r and s table
+                        probe_status = build_and_probe_gpu(r_config->table, r_config->hash_table, s_config->table, s_config->hash_table, joined_rs_table, key_offset, *probe_config);
+                        joined_rs_table.device_index = device_config->device_id;
+                    }
 
                     // free unused probe memory
-                    device_config->free_memory(required_rs_memory - joined_rs_table.get_bytes());
+                    {
+                        std::lock_guard<std::mutex> lock(device_config->device_lock);
+                        device_config->free_memory(required_rs_memory - joined_rs_table.get_bytes());
+                    }
 
                     // store rs table if probing was successful
                     if (probe_status.has_failed()) {
