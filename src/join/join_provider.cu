@@ -35,8 +35,17 @@ struct JoinStatus {
 };
 
 struct PartitionSummary {
+    int device_index = 0;
+    int stream_index = 0;
+    int max_streams = 0;
+    int buckets = 0;
+    int depth = 0;
 
+    size_t vector_bytes = 0;
     index_t elements = 0;
+
+    std::string hash_function = "";
+
     float k_histogram_second = 0.0;
     float k_prefix_second = 0.0;
     float k_swap_second = 0.0;
@@ -44,6 +53,32 @@ struct PartitionSummary {
     float k_histogram_gb_p_second = 0.0;
     float k_swap_elements_p_second = 0.0;
     float k_swap_gb_p_second = 0.0;
+
+    static std::string to_string_header() {
+        std::ostringstream string_stream;
+        string_stream << "device_index,"
+                      << "max_streams,"
+                      << "hash,"
+                      << "stream,"
+                      << "depth,"
+                      << "buckets,"
+                      << "elements,"
+                      << "vector_bytes,"
+                      << "kernel,"
+                      << "runtime,"
+                      << "gb_p_s,"
+                      << "tuples_p_s";
+        return string_stream.str();
+    }
+
+    std::string to_string() {
+        std::ostringstream string_stream;
+        string_stream << device_index << "," << max_streams << "," << hash_function << "," << stream_index << "," << depth << "," << buckets << "," << elements << "," << vector_bytes << ",histogram," << k_histogram_second << "," << k_histogram_gb_p_second << "," << k_histogram_elements_p_second
+                      << std::endl;
+        string_stream << device_index << "," << max_streams << "," << hash_function << "," << stream_index << "," << depth << "," << buckets << "," << elements << "," << vector_bytes << ",prefix," << k_prefix_second << ",0,0" << std::endl;
+        string_stream << device_index << "," << max_streams << "," << hash_function << "," << stream_index << "," << depth << "," << buckets << "," << elements << "," << vector_bytes << ",swap," << k_swap_second << "," << k_swap_gb_p_second << "," << k_swap_elements_p_second;
+        return string_stream.str();
+    }
 };
 
 struct ProbeSummary {
@@ -115,6 +150,7 @@ struct PartitionConfig {
             float runtime_ms = 0.0;
             cudaEventSynchronize(profiling_end);
             cudaEventElapsedTime(&runtime_ms, profiling_start, profiling_end);
+            runtime_ms = max(0.0f, runtime_ms);
             return runtime_ms / pow(10, 3);
         }
         return 0.0f;
@@ -605,6 +641,9 @@ void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_tabl
         float runtime_s = partition_config.get_elapsed_time_s();
         partition_config.profiling_summary.k_prefix_second = runtime_s;
     }
+    gpuErrchk(cudaStreamSynchronize(stream));
+    gpuErrchk(cudaGetLastError());
+
     gpuErrchk(cudaMemcpyAsync(histogram, d_histogram, bins * sizeof(index_t), cudaMemcpyDeviceToHost, stream));
     gpuErrchk(cudaMemcpyAsync(offsets, d_offsets, bins * sizeof(index_t), cudaMemcpyDeviceToHost, stream));
 

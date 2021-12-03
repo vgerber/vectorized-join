@@ -22,10 +22,10 @@
 #define EXTRACT_MODE 0
 
 // memory free tolerance in bytes
-#define MEMORY_TOLERANCE 200000000;
+#define MEMORY_TOLERANCE 500000000;
 
 // 32 or 64 bit unsigned int
-#define HASH_BITS 32
+#define HASH_BITS 64
 
 // 8, 32, 64, 128 bit chunks
 #define HASH_CHUNK_BITS 64

@@ -172,8 +172,14 @@ int main(int argc, char **argv) {
     }
 
     std::fstream run_csv_stream;
+    std::fstream partition_csv_stream;
     run_csv_stream.open((benchmark_setup.output_file_path + "/run.csv"), std::ios::app);
     run_csv_stream << JoinBenchmarkResults::to_string_header() << std::endl;
+
+    if (benchmark_setup.profile) {
+        partition_csv_stream.open((benchmark_setup.output_file_path + "/partition.csv"), std::ios::app);
+        partition_csv_stream << PartitionSummary::to_string_header() << std::endl;
+    }
 
     auto benchmark_configs = get_benchmark_configs(benchmark_setup);
     auto join_configs = get_join_configs(benchmark_setup);
@@ -269,6 +275,11 @@ int main(int argc, char **argv) {
                         gpuErrchk(cudaGetLastError());
 
                         total_join_summary += join_provider.get_join_summary();
+                        if (benchmark_setup.profile) {
+                            for (auto partition_summary : join_provider.get_join_summary().partition_summaries) {
+                                partition_csv_stream << partition_summary.to_string() << std::endl;
+                            }
+                        }
                     }
                     config_index++;
                     std::cout << config_index << "/" << config_count << std::endl;
@@ -293,5 +304,8 @@ int main(int argc, char **argv) {
         run_profile_stream.close();
     }
     run_csv_stream.close();
+    if (benchmark_setup.profile) {
+        partition_csv_stream.close();
+    }
     return 0;
 }

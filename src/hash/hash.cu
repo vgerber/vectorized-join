@@ -267,23 +267,32 @@ __global__ void hash_custom_xor_hw(index_t element_buffer_size, short int chunk_
     for (index_t element_index = index; element_index < element_buffer_size; element_index += stride) {
         hash_t hash = 0;
         index_t buffer_index = element_index * element_chunks;
-        int shift = 0;
+        uint32_t shift = 0;
         for (short int chunk_index = chunk_offset; chunk_index < element_chunks; chunk_index++) {
             chunk_t chunk = element_buffer[buffer_index + chunk_index];
 #if HASH_CHUNK_BITS == 8
-            hash ^= (hash_t)permutate(chunk, shift++);
+            shift += chunk;
+            hash ^= (hash_t)permutate(chunk, shift);
+            hash = reverse(hash);
 #endif
 #if HASH_CHUNK_BITS >= 32
-            hash ^= (hash_t)permutate(chunk.x, shift++);
+            shift += chunk.x;
+            hash ^= (hash_t)permutate(chunk.x, shift);
+            hash = reverse(hash);
 #endif
 #if HASH_CHUNK_BITS >= 64
-            hash ^= (hash_t)permutate(chunk.y, shift++);
+            shift += chunk.y;
+            hash ^= (hash_t)permutate(chunk.y, shift);
+            hash = reverse(hash);
 #endif
 #if HASH_CHUNK_BITS == 128
-            hash ^= (hash_t)permutate(chunk.z, shift++);
-            hash ^= (hash_t)permutate(chunk.w, shift++);
-#endif
+            shift += chunk.z;
+            hash ^= (hash_t)permutate(chunk.z, shift);
             hash = reverse(hash);
+            shift += chunk.w;
+            hash ^= (hash_t)permutate(chunk.w, shift);
+            hash = reverse(hash);
+#endif
         }
         hashed_buffer[element_index] = hash;
     }
@@ -359,21 +368,26 @@ __global__ void hash_custom_mult_hw(index_t element_buffer_size, short int chunk
         for (short int chunk_index = chunk_offset; chunk_index < element_chunks; chunk_index++) {
             chunk_t chunk = element_buffer[buffer_index + chunk_index];
 #if HASH_CHUNK_BITS == 8
-            hash = 1 + (hash * ((hash_t)permutate(chunk, shift++) + 1));
+            shift += chunk;
+            hash = 1 + (hash * ((hash_t)permutate(chunk, shift) + 1));
             hash = reverse(hash);
 #endif
 #if HASH_CHUNK_BITS >= 32
-            hash = 1 + (hash * ((hash_t)permutate(chunk.x, shift++) + 1));
+            shift += chunk.x;
+            hash = 1 + (hash * ((hash_t)permutate(chunk.x, shift) + 1));
             hash = reverse(hash);
 #endif
 #if HASH_CHUNK_BITS >= 64
-            hash = 1 + (hash * ((hash_t)permutate(chunk.y, shift++) + 1));
+            shift += chunk.y;
+            hash = 1 + (hash * ((hash_t)permutate(chunk.y, shift) + 1));
             hash = reverse(hash);
 #endif
 #if HASH_CHUNK_BITS == 128
-            hash = 1 + (hash * ((hash_t)permutate(chunk.z, shift++) + 1));
+            shift += chunk.z;
+            hash = 1 + (hash * ((hash_t)permutate(chunk.z, shift) + 1));
             hash = reverse(hash);
-            hash = 1 + (hash * ((hash_t)permutate(chunk.w, shift++) + 1));
+            shift += chunk.w;
+            hash = 1 + (hash * ((hash_t)permutate(chunk.w, shift) + 1));
             hash = reverse(hash);
 #endif
         }
@@ -393,11 +407,12 @@ __device__ inline void mult_xor_shift(hash_t &hash, hash_t chunk, short int &ope
 
 __device__ inline void mult_xor_hw(hash_t &hash, hash_t chunk, short int &operation, short int &hash_offset) {
     if (operation & 1) {
-        hash = 1 + (hash * ((hash_t)permutate(chunk + 1, hash_offset++)));
+        hash = 1 + (hash * ((hash_t)permutate(chunk + 1, hash_offset)));
     } else {
-        hash = (hash ^ ((hash_t)permutate(chunk, hash_offset++)));
+        hash = (hash ^ ((hash_t)permutate(chunk, hash_offset)));
     }
     operation++;
+    hash_offset += chunk;
     hash = reverse(hash);
 }
 

@@ -602,8 +602,23 @@ class JoinProvider {
 
                 if (join_config.profile_enabled) {
                     std::lock_guard<std::mutex> lock(partition_lock);
-                    join_summary.partition_summaries.push_back(s_partition_config.profiling_summary);
+                    r_partition_config.profiling_summary.device_index = current_device->device_id;
+                    r_partition_config.profiling_summary.stream_index = stream_index;
+                    r_partition_config.profiling_summary.max_streams = current_device->streams.size();
+                    r_partition_config.profiling_summary.hash_function = join_config.hash_config.algorithm;
+                    r_partition_config.profiling_summary.depth = r_bucket_config->bucket_depth;
+                    r_partition_config.profiling_summary.buckets = buckets;
+                    r_partition_config.profiling_summary.vector_bytes = join_config.vector_bytes_size;
                     join_summary.partition_summaries.push_back(r_partition_config.profiling_summary);
+
+                    s_partition_config.profiling_summary.device_index = current_device->device_id;
+                    s_partition_config.profiling_summary.max_streams = current_device->streams.size();
+                    s_partition_config.profiling_summary.hash_function = join_config.hash_config.algorithm;
+                    s_partition_config.profiling_summary.stream_index = stream_index;
+                    s_partition_config.profiling_summary.depth = r_bucket_config->bucket_depth;
+                    s_partition_config.profiling_summary.buckets = buckets;
+                    s_partition_config.profiling_summary.vector_bytes = join_config.vector_bytes_size;
+                    join_summary.partition_summaries.push_back(s_partition_config.profiling_summary);
                 }
             } else {
                 // partition(bucket_config->data, s_swap_entry, radix_width, radix_shift, buckets, bucket_config->histogram, bucket_config->offsets, index_data, gpu);

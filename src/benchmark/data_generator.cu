@@ -218,14 +218,13 @@ void generate_tables(index_t r_table_size, index_t s_table_size, int column_coun
     s_table_data.data_owner = true;
 
     if (distribution == DIST_UNIFORM) {
-        generate_table_data(r_table_data, value_max, 0.0f, distribution);
         generate_table_data(s_table_data, value_max, skew, distribution);
     } else if (distribution == DIST_ZIPF) {
         // limit zipf for performance
         value_max = min((column_t)10000, value_max);
-        generate_table_data(r_table_data, value_max, skew, distribution);
-        generate_table_data(s_table_data, value_max, 0.0f, DIST_UNIFORM);
+        generate_table_data(s_table_data, value_max, skew, distribution);
     }
+    generate_table_data(r_table_data, value_max, 0.0f, DIST_UNIFORM);
 
     gpuErrchk(cudaDeviceSynchronize());
 }
