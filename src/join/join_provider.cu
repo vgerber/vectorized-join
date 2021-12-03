@@ -641,8 +641,6 @@ void partition_gpu(db_table d_table, db_hash_table d_hash_table, db_table d_tabl
         float runtime_s = partition_config.get_elapsed_time_s();
         partition_config.profiling_summary.k_prefix_second = runtime_s;
     }
-    gpuErrchk(cudaStreamSynchronize(stream));
-    gpuErrchk(cudaGetLastError());
 
     gpuErrchk(cudaMemcpyAsync(histogram, d_histogram, bins * sizeof(index_t), cudaMemcpyDeviceToHost, stream));
     gpuErrchk(cudaMemcpyAsync(offsets, d_offsets, bins * sizeof(index_t), cudaMemcpyDeviceToHost, stream));
