@@ -182,7 +182,7 @@ void generate_table_data(db_table &table, column_t value_max, float skew, std::s
         int threads = 256;
         zipf_constant_kernel<<<max((column_t)1, value_max / threads), threads>>>(value_max, skew, d_zipf_constant);
         zipf_distribution_kernel<<<max((column_t)1, value_max / threads), threads>>>(value_max, skew, d_zipf_constant, d_zipf_distribution);
-        zipf_kernel<<<max(1ULL, table.size * value_max / threads), threads>>>(table.size, table.column_count, table.column_values, d_distribution, d_zipf_distribution, value_max, skew);
+        zipf_kernel<<<max(1ULL, table.size / threads), threads>>>(table.size, table.column_count, table.column_values, d_distribution, d_zipf_distribution, value_max, skew);
 
         gpuErrchk(cudaFree(d_zipf_constant));
         gpuErrchk(cudaFree(d_zipf_distribution));
