@@ -1,0 +1,540 @@
+[stream]
+# test data
+elements = [100_000, 250_000, 500_000, 750_000, 1_000_000]
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+rs_scale= [2.0]
+rs_join_columns = [1]
+buckets = [2]
+verify = false
+profile = false
+
+# join
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [64_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_modes = [2]
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [256]
+probe_prefix_n_per_threads = [1]
+probe_prefix_threads = [128, 256]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_extract_x_threads = [16]
+
+# launch
+max_streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+runs = [5]
+gpus = [ 1 ]
+gpu_modes = [0]
+
+# results
+output = "benchmark/run/remote/join/stream"
+
+[stream_profile]
+# test data
+elements = [100_000, 250_000, 500_000, 750_000, 1_000_000]
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+rs_scale= [2.0]
+rs_join_columns = [1]
+buckets = [2]
+verify = false
+profile = true
+
+# join
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [64_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_modes = [2]
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [256]
+probe_prefix_n_per_threads = [1]
+probe_prefix_threads = [128, 256]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_extract_x_threads = [16]
+
+# launch
+max_streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+runs = [5]
+gpus = [ 1 ]
+gpu_modes = [0]
+
+# results
+output = "benchmark/run/remote/join/stream_profile"
+
+[vector]
+# test data
+elements = [10_000, 25_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+# elements = [10_000, 25_000, 50_000, 100_000, 500_000]
+rs_scale= [1.0]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+
+# join
+verify = false
+buckets = [2]
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [16_000, 32_000, 64_000, 128_000, 256_000, 512_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv","custom_xor_hw"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [0,1,2]
+
+# launch
+# max_streams = [ 1, 2, 4, 8, 16 ]
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 1 ]
+gpu_modes = [ 0 ]
+profile = false
+
+# results
+output = "benchmark/run/remote/join/vector"
+
+
+[vector_profile]
+# test data
+elements = [10_000, 25_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+# elements = [10_000, 25_000, 50_000, 100_000, 500_000]
+rs_scale= [1.0]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+
+# join
+verify = false
+buckets = [2]
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [16_000, 32_000, 64_000, 128_000, 256_000, 512_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv","custom_xor_hw"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [0,1,2]
+
+# launch
+# max_streams = [ 1, 2, 4, 8, 16 ]
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 1 ]
+gpu_modes = [ 0 ]
+profile = true
+
+# results
+output = "benchmark/run/remote/join/vector_profile"
+
+[rs]
+# test data
+elements = [10_000, 25_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+rs_scale= [2.0, 4.0, 6.0, 10.0, 12.0, 14.0, 16.0]
+rs_join_columns = [1]
+buckets = [2]
+verify = false
+profile = false
+
+# join
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [64_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_modes = [2]
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [256]
+probe_prefix_n_per_threads = [1]
+probe_prefix_threads = [128, 256]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_extract_x_threads = [16]
+
+# launch
+max_streams = [8]
+runs = [5]
+gpus = [ 1 ]
+gpu_modes = [0]
+
+# results
+output = "benchmark/run/remote/join/rs"
+
+
+[distribution]
+# test data
+elements = [10_000, 25_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+max_values = [100_000]
+skews = [0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999, 1.5, 2.0]
+distribution = ["zipf", "uniform"]
+rs_scale= [2.0]
+rs_join_columns = [1]
+buckets = [2]
+verify = false
+profile = false
+
+# join
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [64_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_modes = [2]
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [256]
+probe_prefix_n_per_threads = [1]
+probe_prefix_threads = [128, 256]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_extract_x_threads = [16]
+
+# launch
+max_streams = [8]
+runs = [5]
+gpus = [ 1 ]
+gpu_modes = [0]
+
+# results
+output = "benchmark/run/remote/join/distribution"
+
+[kernel]
+# test data
+elements = [10_000, 25_000, 50_000, 100_000]
+rs_scale= [1.0]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.7]
+distribution = ["uniform"]
+
+# join
+verify = false
+buckets = [16]
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [128_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["xor_hw"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [1]
+
+# launch
+max_streams = [ 1 ]
+runs = [ 5 ]
+gpus = [ 1 ]
+gpu_modes = [ 0 ]
+profile = true
+
+# results
+output = "benchmark/run/remote/join/kernel"
+
+
+[buckets]
+# test data
+elements = [100_000, 250_000, 500_000, 750_000, 1_000_000]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+rs_scale= [2.0]
+
+# join
+verify = false
+buckets = [2, 4, 8, 16, 32, 64, 128, 256]
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [128_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [2]
+
+# launch
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 1 ]
+gpu_modes = [ 0 ]
+profile = false
+
+# results
+output = "benchmark/run/remote/join/buckets"
+
+
+[buckets_profile]
+# test data
+elements = [100_000, 250_000, 500_000, 750_000, 1_000_000]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.5]
+distribution = ["uniform"]
+rs_scale= [2.0]
+
+# join
+verify = false
+buckets = [2, 4, 8, 16, 32, 64, 128, 256]
+join_modes = [ 0 ]
+
+# vectorization
+vector_bytes_sizes = [128_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [2]
+
+# launch
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 1 ]
+gpu_modes = [ 0 ]
+profile = true
+
+# results
+output = "benchmark/run/remote/join/buckets_profile"
+
+
+[gpus]
+# test data
+elements = [5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+rs_scale= [2.0]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.0]
+distribution = ["uniform"]
+
+# join
+verify = false
+buckets = [8]
+join_modes = [ 0, 1 ]
+
+# vectorization
+vector_bytes_sizes = [256_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [1]
+
+# launch
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 1, 2 ]
+gpu_modes = [ 0 ]
+profile = false
+
+# results
+output = "benchmark/run/remote/join/gpus"
+
+[gpus_profile]
+# test data
+elements = [5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+rs_scale= [2.0]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.0]
+distribution = ["uniform"]
+
+# join
+verify = false
+buckets = [8]
+join_modes = [ 0, 1 ]
+
+# vectorization
+vector_bytes_sizes = [256_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [1]
+
+# launch
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 1, 2 ]
+gpu_modes = [ 0 ]
+profile = true
+
+# results
+output = "benchmark/run/remote/join/gpus_profile"
+
+[gpus_two_profile]
+# test data
+elements = [5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000]
+rs_scale= [2.0]
+rs_join_columns = [1]
+
+# distribution
+max_values = [100_000]
+skews = [0.0]
+distribution = ["uniform"]
+
+# join
+verify = false
+buckets = [8]
+join_modes = [ 0, 1 ]
+
+# vectorization
+vector_bytes_sizes = [256_000]
+
+# hashing
+hash_elements_sizes = [0]
+hash_algorithms = ["fnv"]
+hash_threads = [256]
+hashes_p_threads = [ 4 ]
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.25]
+probe_build_n_per_threads = [1]
+probe_build_threads = [1024]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_modes = [1]
+
+# launch
+max_streams = [ 8 ]
+runs = [ 5 ]
+gpus = [ 2 ]
+gpu_modes = [ 0 ]
+profile = true
+
+# results
+output = "benchmark/run/remote/join/gpus_two_profile"

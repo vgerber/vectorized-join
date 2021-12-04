@@ -37,6 +37,7 @@ struct db_hash_table {
         // indices = nullptr;
         size = 0;
         data_owner = true;
+        device_index = 0;
     }
 
     db_hash_table(index_t table_size, bool gpu = true, int device_index = 0) {
@@ -158,6 +159,7 @@ struct db_table {
     }
 
     db_table(index_t offset, index_t size, db_table table_source) {
+        this->device_index = table_source.device_index;
         this->size = size;
         this->gpu = table_source.gpu;
         this->column_count = table_source.column_count;
@@ -187,6 +189,7 @@ struct db_table {
         table_copy.gpu = to_gpu;
         table_copy.data_owner = true;
         table_copy.size = size;
+        table_copy.device_index = device_index;
         if (to_gpu) {
         } else {
             if (gpu) {

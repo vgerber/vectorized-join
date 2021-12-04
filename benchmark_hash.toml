@@ -63,3 +63,53 @@ gpus = [ 1 ]
 
 # results
 output = "benchmark/run/local/hash/vec4_4/base_all_vec4_4_1ep"
+
+
+
+[gpus]
+# test data
+elements = [1000, 2000, 4000, 8000, 10_000, 20_000, 40_000, 80_000, 160_000, 500_000, 1_000_000, 10_000_000, 100_000_000]
+max_values = [1000]
+skews = [0.0]
+rs_scale= [2.0]
+rs_join_columns = [1]
+verify = false
+profile = false
+
+# hash
+hash_elements_sizes = [8, 16, 32, 64, 128, 256]
+hash_algorithms = [
+        "custom_xor", "custom_xor_shift", "custom_xor_hw", 
+        "custom_mult_xor_shift", "custom_mult_xor_hw", "custom_n_mult_xor_shift", 
+        "custom_mult", "custom_mult_shift", "custom_mult_hw", 
+        "custom_add", "custom_add_shift", "custom_add_hw", 
+        "fnv"]
+hash_threads = [256]
+hashes_p_threads = [4]
+
+
+# algorithm setup
+# probe
+probe_build_table_loads = [0.5]
+probe_build_n_per_threads = [1]
+probe_build_threads = [256]
+probe_prefix_n_per_threads = [1]
+probe_prefix_threads = [128, 256]
+probe_extract_n_per_threads = [1]
+probe_extract_threads = [128]
+probe_extract_x_threads = [16]
+probe_modes = [0]
+
+# launch
+max_streams = [14]
+runs = [5]
+gpus = [ 1, 2 ]
+gpu_modes = [0, 1]
+
+
+distribution = ["uniform"]
+buckets = [2]
+
+
+# results
+output = "benchmark/run/remote/hash/gpus"

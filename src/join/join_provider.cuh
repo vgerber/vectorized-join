@@ -33,7 +33,7 @@ struct BucketConfig {
     }
 
     void print_compare(const std::shared_ptr<BucketConfig> compare_config) {
-        std::cout << std::string(bucket_depth, '-') << hash_table.size << ":" << compare_config->hash_table.size << std::endl;
+        std::cout << std::string(bucket_depth, '-') << hash_table.device_index << ":" << table.device_index << ">" << hash_table.size << ":" << compare_config->hash_table.size << std::endl;
         if (sub_buckets.size() > 0) {
             for (int bucket_index = 0; bucket_index < buckets; bucket_index++) {
                 sub_buckets[bucket_index]->print_compare(compare_config->sub_buckets[bucket_index]);
@@ -345,18 +345,13 @@ class JoinProvider {
 
         std::vector<bucket_pair_t> bucket_pairs;
 
-        for (auto device : devices) {
-            device->synchronize_device();
-        }
+        devices[0]->synchronize_device();
         auto hash_end = std::chrono::high_resolution_clock::now();
 
         auto partition_start = std::chrono::high_resolution_clock::now();
         partition_recursive(r_table_swap, r_hash_table_swap, s_table_swap, s_hash_table_swap, radix_width, r_bucket_config, s_bucket_config, &bucket_pairs, join_config.vector_bytes_size, max_radix_steps, true);
         auto partition_end = std::chrono::high_resolution_clock::now();
         gpuErrchk(cudaGetLastError());
-#if DEBUG_PRINT
-        r_bucket_config->print_compare(s_bucket_config);
-#endif
 
         auto probe_start = std::chrono::high_resolution_clock::now();
         auto probe_status = probe(bucket_pairs, radix_width, joined_rs_tables);
@@ -371,10 +366,6 @@ class JoinProvider {
         }
         auto probe_end = std::chrono::high_resolution_clock::now();
         gpuErrchk(cudaGetLastError());
-
-        for (auto device : devices) {
-            device->free_probe_resources();
-        }
 
         r_hash_table.free();
         r_hash_table_swap.free();
@@ -644,6 +635,7 @@ class JoinProvider {
                 r_sub_bucket->histogram = nullptr;
                 r_sub_bucket->offsets = nullptr;
                 r_sub_bucket->buckets = buckets;
+                r_sub_bucket->device_index = current_device->device_id;
 
                 bucket_ptr s_sub_bucket = std::make_shared<BucketConfig>();
                 s_bucket_config->sub_buckets[bucket_index] = s_sub_bucket;
@@ -651,6 +643,7 @@ class JoinProvider {
                 s_sub_bucket->histogram = nullptr;
                 s_sub_bucket->offsets = nullptr;
                 s_sub_bucket->buckets = buckets;
+                s_sub_bucket->device_index = current_device->device_id;
 
                 // set data for bucket
                 r_sub_bucket->table = db_table(r_sub_offset, r_sub_elements, r_table_swap);
@@ -668,11 +661,13 @@ class JoinProvider {
 
                 // apply radix split if the first split has to be done and more than one device is available
                 if (join_config.devices > 1 && join_config.join_mode == JoinConfig::MODE_RADIX_SPLIT && r_bucket_config->bucket_depth == 0) {
-                    int target_device_index = join_config.devices % (bucket_index + 1);
+                    int target_device_index = bucket_index % join_config.devices;
 
                     // dont copy to master who already has the data
                     if (target_device_index != 0) {
                         auto target_device = devices[target_device_index];
+                        r_sub_bucket->device_index = target_device_index;
+                        s_sub_bucket->device_index = target_device_index;
 
                         // start a new stream for each copy operation to improve latency
                         // copy r table to new device
@@ -740,6 +735,7 @@ class JoinProvider {
             auto r_sub_bucket = r_sub_buckets[sub_bucket_index];
             r_sub_bucket->bucket_depth = r_bucket->bucket_depth;
             r_sub_bucket->buckets = 0;
+            r_sub_bucket->device_index = r_bucket->device_index;
             int r_offset = sub_bucket_index * r_sub_elements;
 
             if (sub_bucket_index < r_sub_buckets_size - 1) {
@@ -770,6 +766,7 @@ class JoinProvider {
                 auto s_sub_bucket = s_sub_buckets[s_sub_bucket_index];
                 s_sub_bucket->bucket_depth = s_bucket->bucket_depth;
                 s_sub_bucket->buckets = 0;
+                s_sub_bucket->device_index = r_bucket->device_index;
 
                 if (s_sub_bucket_index < s_sub_buckets_size - 1) {
                     s_sub_bucket->table = db_table(s_offset, s_sub_elements, s_bucket->table);
@@ -796,8 +793,6 @@ class JoinProvider {
         // status list for all joins
         std::vector<JoinStatus> join_status_list = std::vector<JoinStatus>(bucket_pairs.size());
 
-        // contains all thread for probing
-        std::vector<std::thread> probe_threads;
         for (size_t bucket_pair_index = 0; bucket_pair_index < bucket_pairs.size(); bucket_pair_index++) {
 
             // lock thread slot for bucket
@@ -809,7 +804,7 @@ class JoinProvider {
                 bucket_ptr s_config = bucket.second;
 
                 if (r_config->device_index != s_config->device_index) {
-                    join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot probe two bucekts from different devices");
+                    join_status_list[bucket_pair_index] = JoinStatus(false, "Cannot probe two buckets from different devices");
                     release_thread();
                     return;
                 }

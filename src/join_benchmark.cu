@@ -153,7 +153,7 @@ int main(int argc, char **argv) {
     BenchmarkSetup benchmark_setup;
     if (!load_benchmark_setup(std::string(argv[1]), std::string(argv[2]), &benchmark_setup)) {
         std::cout << "Failed to load config" << std::endl;
-        return -1;
+        // return -1;
     }
 
     if (!benchmark_setup.has_join_setup) {
