@@ -63,7 +63,7 @@ __global__ void uniform_kernel(int elements, int column_count, column_t *element
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = (gridDim.x * blockDim.x);
     for (int value_index = index; value_index < elements; value_index += stride) {
-        column_t value = uniform_values[value_index] * (value_max - value_offset);
+        column_t value = uniform_values[value_index] * value_max;
         for (int column_index = 0; column_index < column_count; column_index++) {
             element_buffer[value_index * column_count + column_index] = value_offset + value;
         }
@@ -187,7 +187,7 @@ void generate_table_data(db_table &table, column_t value_max, float skew, std::s
         gpuErrchk(cudaFree(d_zipf_constant));
         gpuErrchk(cudaFree(d_zipf_distribution));
     } else if (distribution == DIST_UNIFORM) {
-        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_count, table.column_values, d_distribution, ceil(skew * value_max), value_max);
+        uniform_kernel<<<max(1ULL, table.size / 256), 256>>>(table.size, table.column_count, table.column_values, d_distribution, (column_t)ceil((skew + 0.1f) * value_max), value_max);
     }
     gpuErrchk(cudaFree(d_distribution));
 

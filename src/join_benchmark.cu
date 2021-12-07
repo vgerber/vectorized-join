@@ -207,6 +207,7 @@ int main(int argc, char **argv) {
                     probe_config.d_probe_buffer = nullptr;
 
                     JoinConfig join_config;
+                    join_config.buckets = join_benchmark_config.buckets;
                     join_config.join_mode = join_benchmark_config.join_mode;
                     join_config.profile_enabled = benchmark_config.profile;
                     join_config.devices = benchmark_config.gpus;

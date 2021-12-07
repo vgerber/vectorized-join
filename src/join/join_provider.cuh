@@ -112,7 +112,6 @@ struct JoinConfig {
     int tasks_p_device = 1;
     int devices = 1;
     bool profile_enabled = true;
-    bool vectorize = false;
     int vector_bytes_size = 0;
     int join_mode = MODE_RADIX_SPLIT;
     int buckets = 2;
@@ -157,38 +156,42 @@ struct DeviceConfig {
         stream_probe_configurations.clear();
     }
 
-    void free() {
-        set_device();
-        for (int probe_config_index = 0; probe_config_index < stream_probe_configurations.size(); probe_config_index++) {
-            cudaStream_t stream = streams[probe_config_index];
+    void free_partition_resources() {
+        for (auto &part_config : stream_partition_configurations) {
+            part_config.free();
         }
+        stream_partition_configurations.clear();
+    }
 
-        free_probe_resources();
-
-        for (auto stream : streams) {
-            cudaStreamDestroy(stream);
-        }
-        streams.clear();
-
+    void free_events() {
         for (auto profiling_event : profiling_events) {
             cudaEventDestroy(profiling_event);
         }
         profiling_events.clear();
+    }
 
-        for (auto &probe_config : stream_probe_configurations) {
-            probe_config.free();
+    void free_streams() {
+        for (auto stream : streams) {
+            cudaStreamDestroy(stream);
         }
-        stream_partition_configurations.clear();
+        streams.clear();
+    }
 
-        for (auto &partition_config : stream_partition_configurations) {
-            partition_config.free();
-        }
-        stream_partition_configurations.clear();
-
+    void disable_peer_access() {
         for (auto peer_index : peers) {
             gpuErrchk(cudaDeviceDisablePeerAccess(peer_index));
         }
         peers.clear();
+    }
+
+    void free() {
+        set_device();
+
+        free_probe_resources();
+        free_partition_resources();
+        free_events();
+        free_streams();
+        disable_peer_access();
     }
 
     int get_next_queue_index() {
