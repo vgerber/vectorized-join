@@ -1,9 +1,23 @@
-# vectorized-join
-Vectorization of hash join operations
+# Hash-Join and Hashing with multi GPU systems
+Diploma thesis which investigated the use of multi GPU systems for joining large database tables using the hash join algoirthm.
 
-## Versions
+## Implementation
+- The main hash-join kernels are implemented in [join_provider](src/join/join_provider.cu)
+- The main hash kernels are implemented in [hash](src/hash/hash.cu)
+- Benchmark results provided in my thesis are located in [benchmark](benchmark/)
+- Example usages can be found in [playground](src/playground)
 
-### Filter
-|Version|Changes|
-|---|---|
-|0|<ul><li>Multi GPU support</li><li>Even data split</li><li>Lambda support</li></ul>|
+## Build
+
+##### Libs
+  - nlohman_json
+  - toml11
+  - CUDA 10+
+
+##### CMAKE
+```cmake
+mkdir build
+cd build
+cmake ..
+cmake --build .
+```
