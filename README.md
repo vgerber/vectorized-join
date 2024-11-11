@@ -1,5 +1,5 @@
 # Hash-Join and Hashing with multi GPU systems
-Diploma thesis which investigated the use of multi GPU systems for joining large database tables using the hash join algoirthm.
+[Diploma thesis](diploma_thesis.pdf) which investigated the use of multi GPU systems for joining large database tables using the hash join algoirthm.
 
 ## Implementation
 - The main hash-join kernels are implemented in [join_provider](src/join/join_provider.cu)
